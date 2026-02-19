@@ -11,20 +11,19 @@ structure better than t-SNE. The idea for phase detection:
    the same phase cluster together because they share similar correlations.
    Near the transition, samples bridge the two clusters.
 
-2. **Cluster** the 2D embedding into k=2 groups using:
-   - KMeans (hard assignment — each point belongs to exactly one cluster)
-   - Gaussian Mixture Model (soft assignment — gives a probability for each cluster)
+2. **Cluster** the 2D embedding into k=2 groups using KMeans (hard
+   assignment — each point belongs to exactly one cluster).
 
 3. **Identify phases**: the cluster whose members have higher average beta
    is labelled KVBS (ordered). The other is SM (disordered).
 
 4. **Compute f_KVBS(beta)**: for each beta value, compute the fraction of
-   samples assigned to (or with high probability of) the KVBS cluster.
-   This fraction transitions from ~0 (all SM at low beta) to ~1 (all KVBS
-   at high beta) in a sigmoid shape.
+   samples assigned to the KVBS cluster. This transitions from ~0 (all SM
+   at low beta) to ~1 (all KVBS at high beta) in a sigmoid shape.
 
 5. **Fit sigmoid** f(beta) = 1 / (1 + exp(-(beta - beta_c) / w)) to
-   extract beta_c as the midpoint of the transition.
+   extract beta_c as the midpoint of the transition.  The peak of the
+   point-wise derivative df_KVBS/dbeta provides a second estimate.
 
 Usage
 -----
@@ -36,7 +35,6 @@ import numpy as np
 from scipy.optimize import curve_fit
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from sklearn.mixture import GaussianMixture
 
 try:
     import umap # type: ignore
@@ -53,19 +51,37 @@ def sigmoid_fit(beta, beta_c, w):
     return 1.0 / (1.0 + np.exp(-(beta - beta_c) / w))
 
 
+def sigmoid_deriv(beta, beta_c, w):
+    """Analytic derivative of the logistic sigmoid: df/dbeta = f(1-f)/w.
+    Bell-shaped, peaks exactly at beta = beta_c with height 1/(4w)."""
+    s = sigmoid_fit(beta, beta_c, w)
+    return s * (1.0 - s) / w
+
+
 def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50):
     """
-    Run UMAP + clustering for a single alpha value.
+    Run UMAP + KMeans clustering for a single alpha value.
 
     Steps:
         1. Center the data and pre-reduce to `pca_dims` with PCA (for speed).
         2. UMAP to 2D.
-        3. KMeans(k=2) and GMM(k=2) on the 2D embedding.
-        4. Sigmoid fits to f_KVBS(beta).
+        3. KMeans(k=2) on the 2D embedding.
+        4. Sigmoid fit to f_KVBS(beta) and point-wise derivative.
 
     Returns
     -------
-    dict with embedding, cluster labels, beta_c estimates, etc.
+    dict with keys:
+        'embedding'       — 2D UMAP coordinates, shape (N, 2)
+        'betas'           — beta label for every sample
+        'u_beta'          — sorted unique beta values
+        'km_labels'       — KMeans cluster assignments
+        'f_kvbs_km'       — KVBS fraction at each beta
+        'km_sig'          — beta_c from sigmoid fit
+        'km_sig_err'      — 1-sigma error on km_sig from covariance matrix
+        'km_deriv'        — beta_c from point-wise derivative peak of f_KVBS
+        'best'            — km_sig (sigmoid peak has the right trend)
+        'km_sig_popt'     — [beta_c, w] sigmoid fit parameters
+        'km_deriv_curve'  — (beta_mid, d(f_KVBS)/dbeta) for visualization
     """
     if not HAS_UMAP:
         raise ImportError("umap-learn is required. Install with: pip install umap-learn")
@@ -95,81 +111,50 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50):
     mean_beta_1 = np.mean(betas[km_labels == 1])
     kvbs_label_km = 1 if mean_beta_1 > mean_beta_0 else 0
 
-    # f_KVBS(beta) from KMeans
     f_kvbs_km = np.array(
         [np.mean(km_labels[betas == b] == kvbs_label_km) for b in u_beta]
     )
 
+    # Sigmoid fit
     try:
-        popt_km, _ = curve_fit(sigmoid_fit, u_beta, f_kvbs_km,
-                               p0=[fss_bc, 2.0],
-                               bounds=([u_beta[2], 0.1], [u_beta[-3], 20.0]),
-                               maxfev=10000)
-        bc_km = popt_km[0]
+        popt_km, pcov_km = curve_fit(
+            sigmoid_fit, u_beta, f_kvbs_km,
+            p0=[fss_bc, 2.0],
+            bounds=([u_beta[2], 0.1], [u_beta[-3], 20.0]),
+            maxfev=10000,
+        )
+        bc_km     = float(popt_km[0])
+        bc_km_err = float(np.sqrt(pcov_km[0, 0]))
     except Exception:
-        bc_km = np.nan
-        popt_km = None
+        bc_km     = np.nan
+        bc_km_err = np.nan
+        popt_km   = None
 
-    # Derivative of f_KVBS_km → peak = steepest change = transition
-    d_fkm = np.diff(f_kvbs_km) / np.diff(u_beta)
-    beta_mid = 0.5 * (u_beta[:-1] + u_beta[1:])
-    bc_km_deriv = beta_mid[np.argmax(d_fkm)]
-
-    # ── GMM clustering ─────────────────────────────────────────────────────
-    gmm = GaussianMixture(n_components=2, random_state=42)
-    gmm_labels = gmm.fit_predict(embedding)
-    gmm_probs = gmm.predict_proba(embedding)
-
-    mean_beta_g0 = np.mean(betas[gmm_labels == 0])
-    mean_beta_g1 = np.mean(betas[gmm_labels == 1])
-    kvbs_label_gmm = 1 if mean_beta_g1 > mean_beta_g0 else 0
-
-    # f_KVBS(beta) from GMM (soft probabilities)
-    f_kvbs_gmm = np.array(
-        [np.mean(gmm_probs[betas == b, kvbs_label_gmm]) for b in u_beta]
-    )
-
-    try:
-        popt_gmm, _ = curve_fit(sigmoid_fit, u_beta, f_kvbs_gmm,
-                                p0=[fss_bc, 2.0],
-                                bounds=([u_beta[2], 0.1], [u_beta[-3], 20.0]),
-                                maxfev=10000)
-        bc_gmm = popt_gmm[0]
-    except Exception:
-        bc_gmm = np.nan
-        popt_gmm = None
-
-    # Derivative of f_KVBS_gmm
-    d_fgmm = np.diff(f_kvbs_gmm) / np.diff(u_beta)
-    bc_gmm_deriv = beta_mid[np.argmax(d_fgmm)]
-
-    # Best estimate: derivative of KMeans f_KVBS (most stable)
-    bc_best = bc_km_deriv
+    # Point-wise derivative of f_KVBS
+    beta_mid    = 0.5 * (u_beta[:-1] + u_beta[1:])
+    d_fkm       = np.diff(f_kvbs_km) / np.diff(u_beta)
+    bc_km_deriv = float(beta_mid[np.argmax(d_fkm)])
 
     return {
-        "embedding": embedding,
-        "betas": betas,
-        "u_beta": u_beta,
-        "km_labels": km_labels,
-        "gmm_labels": gmm_labels,
-        "gmm_probs": gmm_probs,
-        "f_kvbs_km": f_kvbs_km,
-        "f_kvbs_gmm": f_kvbs_gmm,
-        "beta_c_km": bc_km,
-        "beta_c_gmm": bc_gmm,
-        "beta_c_km_deriv": bc_km_deriv,
-        "beta_c_gmm_deriv": bc_gmm_deriv,
-        "beta_c_best": bc_best,
-        "sigmoid_params_km": popt_km,
-        "sigmoid_params_gmm": popt_gmm,
-        "deriv_km": (beta_mid, d_fkm),
-        "deriv_gmm": (beta_mid, d_fgmm),
+        "embedding":      embedding,
+        "betas":          betas,
+        "u_beta":         u_beta,
+        "km_labels":      km_labels,
+        "f_kvbs_km":      f_kvbs_km,
+        "km_sig":         bc_km,
+        "km_sig_err":     bc_km_err,
+        "km_deriv":       bc_km_deriv,
+        "best":           bc_km,
+        "km_sig_popt":    popt_km,
+        "km_deriv_curve": (beta_mid, d_fkm),
     }
 
 
 def run_all(alphas=None):
     """
     Run UMAP analysis for all alphas. Saves to results/umap_results.npz.
+
+    beta_c array layout: [km_sig, km_sig_err, km_deriv, best]
     """
     if not HAS_UMAP:
         print("ERROR: umap-learn not installed. Run: pip install umap-learn")
@@ -188,9 +173,9 @@ def run_all(alphas=None):
 
         fss = FSS_DICT.get(alpha, np.nan)
         print(
-            f"  KMeans: sig={res['beta_c_km']:.1f} deriv={res['beta_c_km_deriv']:.1f}  "
-            f"GMM: sig={res['beta_c_gmm']:.1f} deriv={res['beta_c_gmm_deriv']:.1f}  "
-            f"best={res['beta_c_best']:.1f}  FSS={fss:.1f}"
+            f"  km_sig={res['km_sig']:.1f}±{res['km_sig_err']:.2f}  "
+            f"km_deriv={res['km_deriv']:.1f}  "
+            f"best={res['best']:.1f}  FSS={fss:.1f}"
         )
 
     # Save
@@ -198,28 +183,24 @@ def run_all(alphas=None):
     for alpha in alphas:
         r = all_results[alpha]
         key = f"a{alpha:.4f}"
-        save_dict[f"{key}_u_beta"] = r["u_beta"]
-        save_dict[f"{key}_f_kvbs_km"] = r["f_kvbs_km"]
-        save_dict[f"{key}_f_kvbs_gmm"] = r["f_kvbs_gmm"]
+        save_dict[f"{key}_u_beta"]        = r["u_beta"]
+        save_dict[f"{key}_f_kvbs_km"]     = r["f_kvbs_km"]
+        # beta_c: [km_sig, km_sig_err, km_deriv, best]
         save_dict[f"{key}_beta_c"] = np.array([
-            r["beta_c_km"], r["beta_c_gmm"],
-            r["beta_c_km_deriv"], r["beta_c_gmm_deriv"], r["beta_c_best"]
+            r["km_sig"], r["km_sig_err"], r["km_deriv"], r["best"],
         ])
-        save_dict[f"{key}_deriv_km_beta"] = r["deriv_km"][0]
-        save_dict[f"{key}_deriv_km_vals"] = r["deriv_km"][1]
-        save_dict[f"{key}_deriv_gmm_vals"] = r["deriv_gmm"][1]
-        if r["sigmoid_params_km"] is not None:
-            save_dict[f"{key}_sigmoid_km"] = np.array(r["sigmoid_params_km"])
-        if r["sigmoid_params_gmm"] is not None:
-            save_dict[f"{key}_sigmoid_gmm"] = np.array(r["sigmoid_params_gmm"])
-        # Save subsampled embedding for scatter plots
+        save_dict[f"{key}_km_deriv_beta"] = r["km_deriv_curve"][0]
+        save_dict[f"{key}_km_deriv_vals"] = r["km_deriv_curve"][1]
+        if r["km_sig_popt"] is not None:
+            save_dict[f"{key}_km_sig_popt"] = np.array(r["km_sig_popt"])
+        # Subsampled embedding for scatter plots
         idx = np.random.default_rng(42).choice(
             len(r["embedding"]), min(5000, len(r["embedding"])), replace=False
         )
-        save_dict[f"{key}_emb_x"] = r["embedding"][idx, 0]
-        save_dict[f"{key}_emb_y"] = r["embedding"][idx, 1]
+        save_dict[f"{key}_emb_x"]     = r["embedding"][idx, 0]
+        save_dict[f"{key}_emb_y"]     = r["embedding"][idx, 1]
         save_dict[f"{key}_emb_betas"] = r["betas"][idx]
-        save_dict[f"{key}_emb_km"] = r["km_labels"][idx]
+        save_dict[f"{key}_emb_km"]    = r["km_labels"][idx]
 
     np.savez(f"{results_dir}/umap_results.npz", **save_dict)
     print(f"\nResults saved to {results_dir}/umap_results.npz")

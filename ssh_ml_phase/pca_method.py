@@ -1,19 +1,20 @@
 """
-PCA-based beta_c extraction using three methods:
+PCA-based beta_c extraction using two methods:
 
 1. **Susceptibility peak** — Var(P1)(beta) and Var(P2)(beta) are the PCA
    susceptibilities.  Bond-bond correlation data gives a V-shaped <|P1|>,
    so the *minimum* of <|P1|> is NOT beta_c.  Instead the *peak of Var(Pk)*
-   is used: beta_c = u_beta[argmax Var(Pk)].  Smoothed curves are also
-   computed for visualization.
+   is used.  Two estimates are provided:
+   - Raw argmax: beta_c = u_beta[argmax Var(Pk)]
+   - Smooth argmax: beta_c = u_beta[argmax Var(Pk_sm)], which is equivalent
+     to finding where d Var(Pk_sm)/d beta crosses zero from above.  More
+     noise-robust than the raw argmax.
 
-2. **Slope peak** — d Var(P1)/d beta (smoothed) peaks just below beta_c
-   as the susceptibility rises most steeply through the transition.
-
-3. **KMeans clustering** — K-means (k=2) on the 2D PCA space (P1 vs P2).
+2. **KMeans clustering** — K-means (k=2) on the 2D PCA space (P1 vs P2).
    Identifies the ordered (KVBS) and disordered (SM) phases by cluster
-   membership. Fits a sigmoid to f_KVBS(beta) to extract beta_c, and also
-   takes the derivative peak of f_KVBS as a second estimate.
+   membership. Fits a sigmoid to f_KVBS(beta) to extract beta_c (with
+   1-sigma error), and also takes the derivative peak of f_KVBS as a
+   second estimate.
 
 Usage
 -----
@@ -36,6 +37,13 @@ from .data import load_data, ensure_results_dir
 def sigmoid_fit(beta, beta_c, w):
     """Standard logistic sigmoid: f = 1 / (1 + exp(-(beta - beta_c)/w))."""
     return 1.0 / (1.0 + np.exp(-(beta - beta_c) / w))
+
+
+def sigmoid_deriv(beta, beta_c, w):
+    """Analytic derivative of the logistic sigmoid: df/dbeta = f(1-f)/w.
+    Bell-shaped, peaks exactly at beta = beta_c with height 1/(4w)."""
+    s = sigmoid_fit(beta, beta_c, w)
+    return s * (1.0 - s) / w
 
 
 # Kept for backward compatibility (imported by the notebook)
@@ -112,14 +120,19 @@ def extract_beta_c(alpha, pca_result=None):
     of the raw variance arrays.
 
     Returns dict with keys:
-        'argmax_P1'    — beta_c = u_beta[argmax Var(P1)]
-        'argmax_P2'    — beta_c = u_beta[argmax Var(P2)]
-        'var_deriv'    — beta_c from peak of d Var(P1) / d beta (smoothed)
-        'km_sig'       — beta_c from KMeans sigmoid fit on 2D PCA space
-        'km_deriv'     — beta_c from KMeans f_KVBS derivative peak
-        'best'         — argmax_P1
-        plus 'var_deriv_curve', 'km_labels', 'f_kvbs_km', 'sigmoid_km',
-             'pca_result'
+        'argmax_P1'       — beta_c = u_beta[argmax Var(P1)]  (raw)
+        'argmax_P2'       — beta_c = u_beta[argmax Var(P2)]  (raw)
+        'sm_argmax_P1'    — beta_c = u_beta[argmax Var(P1_sm)], equiv. to the
+                            zero-crossing of d Var(P1_sm)/d beta from above
+        'sm_argmax_P2'    — same for P2
+        'km_sig'          — beta_c from KMeans sigmoid fit on 2D PCA space
+        'km_sig_err'      — 1-sigma error on km_sig from covariance matrix
+        'km_deriv'        — beta_c from point-wise derivative peak of f_KVBS
+        'best'            — sm_argmax_P1
+        'var1_deriv_curve' — (beta_mid, d(Var_P1_sm)/dbeta) for visualization
+        'var2_deriv_curve' — (beta_mid, d(Var_P2_sm)/dbeta) for visualization
+        'km_deriv_curve'  — (beta_mid, d(f_KVBS)/dbeta) for visualization
+        plus 'km_labels', 'f_kvbs_km', 'km_sig_popt', 'pca_result'
     """
     if pca_result is None:
         pca_result = run_pca(alpha)
@@ -128,6 +141,7 @@ def extract_beta_c(alpha, pca_result=None):
     var_P1      = pca_result["var_P1"]
     var_P1_sm   = pca_result["var_P1_sm"]
     var_P2      = pca_result["var_P2"]
+    var_P2_sm   = pca_result["var_P2_sm"]
     P           = pca_result["P"]
     betas_all   = pca_result["betas"]
     fss_bc      = FSS_DICT.get(alpha, np.mean(u_beta))
@@ -138,21 +152,18 @@ def extract_beta_c(alpha, pca_result=None):
     # ── Method 2: argmax of Var(P2) ──────────────────────────────────────────
     bc_argmax_P2 = float(u_beta[np.argmax(var_P2)])
 
-    # ── Method 3: Peak of d Var(P1) / d beta (smoothed) ──────────────────────
-    # The susceptibility rises steeply through the transition; its slope is
-    # maximum just below beta_c.  After smoothing, the peak of dVar/dbeta is
-    # a robust proxy for the transition midpoint.
-    d_var    = np.diff(var_P1_sm) / np.diff(u_beta)
-    beta_mid = 0.5 * (u_beta[:-1] + u_beta[1:])
-    # Only look in the rising part: up to the smoothed peak of Var(P1)
-    pk_idx = int(np.argmax(var_P1_sm))
-    d_var_left = d_var[:pk_idx]
-    if len(d_var_left) > 0:
-        bc_var_deriv = float(beta_mid[:pk_idx][np.argmax(d_var_left)])
-    else:
-        bc_var_deriv = float(beta_mid[np.argmax(d_var)])
+    # ── Smooth argmax / zero-crossing of d(Var_sm)/d beta ────────────────────
+    # argmax(Var_Pk_sm) is the noise-robust susceptibility peak estimate.
+    # It is equivalent to finding where d(Var_Pk_sm)/dbeta crosses zero from above.
+    bc_sm_argmax_P1 = float(u_beta[np.argmax(var_P1_sm)])
+    bc_sm_argmax_P2 = float(u_beta[np.argmax(var_P2_sm)])
 
-    # ── Method 4: KMeans clustering on 2D PCA space ──────────────────────────
+    # Derivative curves of smoothed Var — saved for visualization only.
+    beta_mid   = 0.5 * (u_beta[:-1] + u_beta[1:])
+    d_var_sm1  = np.diff(var_P1_sm) / np.diff(u_beta)
+    d_var_sm2  = np.diff(var_P2_sm) / np.diff(u_beta)
+
+    # ── KMeans clustering on 2D PCA space ────────────────────────────────────
     km = KMeans(n_clusters=2, random_state=42, n_init=10)
     km_labels = km.fit_predict(P[:, :2])
 
@@ -166,32 +177,38 @@ def extract_beta_c(alpha, pca_result=None):
     )
 
     try:
-        popt_km, _ = curve_fit(
+        popt_km, pcov_km = curve_fit(
             sigmoid_fit, u_beta, f_kvbs_km,
             p0=[fss_bc, 2.0],
             bounds=([u_beta[2], 0.1], [u_beta[-3], 20.0]),
             maxfev=10000,
         )
-        bc_km = float(popt_km[0])
+        bc_km     = float(popt_km[0])
+        bc_km_err = float(np.sqrt(pcov_km[0, 0]))
     except Exception:
-        bc_km = np.nan
-        popt_km = None
+        bc_km     = np.nan
+        bc_km_err = np.nan
+        popt_km   = None
 
-    d_fkm = np.diff(f_kvbs_km) / np.diff(u_beta)
+    d_fkm       = np.diff(f_kvbs_km) / np.diff(u_beta)
     bc_km_deriv = float(beta_mid[np.argmax(d_fkm)])
 
     return {
-        "argmax_P1":    bc_argmax_P1,
-        "argmax_P2":    bc_argmax_P2,
-        "var_deriv":    bc_var_deriv,
-        "km_sig":       bc_km,
-        "km_deriv":     bc_km_deriv,
-        "best":         bc_argmax_P1,
-        "var_deriv_curve":  (beta_mid, d_var),
-        "km_labels":    km_labels,
-        "f_kvbs_km":    f_kvbs_km,
-        "sigmoid_km":   popt_km,
-        "pca_result":   pca_result,
+        "argmax_P1":        bc_argmax_P1,
+        "argmax_P2":        bc_argmax_P2,
+        "sm_argmax_P1":     bc_sm_argmax_P1,
+        "sm_argmax_P2":     bc_sm_argmax_P2,
+        "km_sig":           bc_km,
+        "km_sig_err":       bc_km_err,
+        "km_deriv":         bc_km_deriv,
+        "best":             bc_sm_argmax_P1,
+        "var1_deriv_curve": (beta_mid, d_var_sm1),
+        "var2_deriv_curve": (beta_mid, d_var_sm2),
+        "km_deriv_curve":   (beta_mid, d_fkm),
+        "km_labels":        km_labels,
+        "f_kvbs_km":        f_kvbs_km,
+        "km_sig_popt":      popt_km,
+        "pca_result":       pca_result,
     }
 
 
@@ -199,7 +216,7 @@ def run_all(alphas=None):
     """
     Run PCA analysis for all alphas. Saves results to results/pca_results.npz.
 
-    beta_c array layout: [argmax_P1, argmax_P2, var_deriv, km_sig, km_deriv, best]
+    beta_c array layout: [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best]
     """
     if alphas is None:
         alphas = ALPHAS
@@ -214,10 +231,10 @@ def run_all(alphas=None):
 
         fss = FSS_DICT.get(alpha, np.nan)
         print(
-            f"  argmax_P1={res['argmax_P1']:.1f}  argmax_P2={res['argmax_P2']:.1f}  "
-            f"var_deriv={res['var_deriv']:.1f}  "
-            f"km_sig={res['km_sig']:.1f}  km_deriv={res['km_deriv']:.1f}  "
-            f"best={res['best']:.1f}  FSS={fss:.1f}"
+            f"  argmax_P1={res['argmax_P1']:.1f}  sm_argmax_P1={res['sm_argmax_P1']:.1f}  "
+            f"argmax_P2={res['argmax_P2']:.1f}  sm_argmax_P2={res['sm_argmax_P2']:.1f}  "
+            f"km_sig={res['km_sig']:.1f}±{res['km_sig_err']:.2f}  "
+            f"km_deriv={res['km_deriv']:.1f}  FSS={fss:.1f}"
         )
 
     # Save
@@ -234,17 +251,24 @@ def run_all(alphas=None):
         save_dict[f"{key}_var_P2"]        = pr["var_P2"]
         save_dict[f"{key}_var_P2_sm"]     = pr["var_P2_sm"]
         save_dict[f"{key}_explained_var"] = pr["explained_var"]
-        # beta_c: [argmax_P1, argmax_P2, var_deriv, km_sig, km_deriv, best]
+        # beta_c: [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best]
         save_dict[f"{key}_beta_c"] = np.array([
-            r["argmax_P1"], r["argmax_P2"], r["var_deriv"],
-            r["km_sig"], r["km_deriv"], r["best"],
+            r["argmax_P1"], r["argmax_P2"],
+            r["km_sig"], r["km_sig_err"], r["km_deriv"], r["best"],
         ])
-        save_dict[f"{key}_var_deriv_beta"] = r["var_deriv_curve"][0]
-        save_dict[f"{key}_var_deriv_vals"] = r["var_deriv_curve"][1]
+        save_dict[f"{key}_sm_argmax_P1"]    = r["sm_argmax_P1"]
+        save_dict[f"{key}_sm_argmax_P2"]    = r["sm_argmax_P2"]
+        # Var derivative curves (for visualization; zero-crossing = sm_argmax)
+        save_dict[f"{key}_var1_deriv_beta"] = r["var1_deriv_curve"][0]
+        save_dict[f"{key}_var1_deriv_vals"] = r["var1_deriv_curve"][1]
+        save_dict[f"{key}_var2_deriv_beta"] = r["var2_deriv_curve"][0]
+        save_dict[f"{key}_var2_deriv_vals"] = r["var2_deriv_curve"][1]
         # KMeans data
-        save_dict[f"{key}_f_kvbs_km"] = r["f_kvbs_km"]
-        if r["sigmoid_km"] is not None:
-            save_dict[f"{key}_sigmoid_km"] = np.array(r["sigmoid_km"])
+        save_dict[f"{key}_f_kvbs_km"]       = r["f_kvbs_km"]
+        save_dict[f"{key}_km_deriv_beta"]   = r["km_deriv_curve"][0]
+        save_dict[f"{key}_km_deriv_vals"]   = r["km_deriv_curve"][1]
+        if r["km_sig_popt"] is not None:
+            save_dict[f"{key}_km_sig_popt"] = np.array(r["km_sig_popt"])
         # Scatter data (subsample for visualization)
         P = pr["P"]
         betas = pr["betas"]
