@@ -9,3 +9,16 @@ dist/
 .env
 figures/
 data/
+*.jl
+create*
+extract*
+*.txt
+run_SSH_edited.py
+*.aux
+*.fdb*
+*.fls
+*.log
+*.out
+*.pdf
+*.gz
+*.tex

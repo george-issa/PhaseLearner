@@ -9,9 +9,10 @@ correct and both training sides contain pure-phase data.
 
 Usage
 -----
-    python -m ssh_ml_phase.assaad_method                     # all alphas, all nskips
-    python -m ssh_ml_phase.assaad_method --alphas 0.240      # single alpha
-    python -m ssh_ml_phase.assaad_method --nskips 4 6        # subset of nskips
+    python3.11 -m ssh_ml_phase.assaad_method                           # all alphas, all nskips
+    python3.11 -m ssh_ml_phase.assaad_method --alphas 0.240            # single alpha
+    python3.11 -m ssh_ml_phase.assaad_method --nskips 4 6              # subset of nskips
+    python3.11 -m ssh_ml_phase.assaad_method --tag bmin8               # explicit output label
 """
 import argparse
 import numpy as np
@@ -21,7 +22,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from .config import ALPHAS, L, FSS_DICT, DEVICE
-from .data import load_data, ensure_results_dir
+from .data import load_beta_sweep, ensure_results_dir, result_filename
 
 
 class CNN_GI(nn.Module):
@@ -53,7 +54,8 @@ class CNN_GI(nn.Module):
         return self.classifier(x)
 
 
-def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=False):
+def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=False,
+               beta_min=None, beta_max=None, stride=None):
     """
     Run the Assaad method for one (alpha, nskip) pair.
 
@@ -62,7 +64,8 @@ def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=Fal
     trunc_betas : ndarray — guessed beta_c values
     test_accs   : ndarray — test accuracy at each guess
     """
-    X, betas = load_data(alpha)
+    X, betas = load_beta_sweep(alpha, beta_min=beta_min, beta_max=beta_max,
+                               stride=stride)
     u_beta = np.unique(betas)
     NL = len(u_beta)
     half = nskip // 2
@@ -155,7 +158,8 @@ def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=Fal
     return trunc_beta, np.array(test_accuracies)
 
 
-def run_all(alphas=None, nskip_values=None):
+def run_all(alphas=None, nskip_values=None, tag=None,
+            beta_min=None, beta_max=None, stride=None):
     """
     Run Assaad method for all alphas and nskip values.
     Saves to results/assaad_results.npz.
@@ -172,7 +176,9 @@ def run_all(alphas=None, nskip_values=None):
         all_results[alpha] = {}
         for nskip in nskip_values:
             print(f"[Assaad] alpha={alpha:.3f}, nskip={nskip} ...")
-            trunc_betas, accs = run_single(alpha, nskip, verbose=False)
+            trunc_betas, accs = run_single(alpha, nskip, verbose=False,
+                                           beta_min=beta_min, beta_max=beta_max,
+                                           stride=stride)
             all_results[alpha][nskip] = {"betas": trunc_betas, "accs": accs}
 
             bc_est = trunc_betas[np.argmax(accs)]
@@ -191,8 +197,9 @@ def run_all(alphas=None, nskip_values=None):
                 [r["betas"][np.argmax(r["accs"])]]
             )
 
-    np.savez(f"{results_dir}/assaad_results.npz", **save_dict)
-    print(f"\nResults saved to {results_dir}/assaad_results.npz")
+    fname = result_filename("assaad", tag)
+    np.savez(f"{results_dir}/{fname}", **save_dict)
+    print(f"\nResults saved to {results_dir}/{fname}")
 
     return all_results
 
@@ -201,8 +208,15 @@ def main():
     parser = argparse.ArgumentParser(description="Assaad (GI) method for beta_c")
     parser.add_argument("--alphas", nargs="+", type=float, default=None)
     parser.add_argument("--nskips", nargs="+", type=int, default=None)
+    parser.add_argument("--tag", type=str, default=None,
+                        help="Label appended to output filename")
+    parser.add_argument("--beta-min", type=float, default=None)
+    parser.add_argument("--beta-max", type=float, default=None)
+    parser.add_argument("--stride", type=int, default=None,
+                        help="Use every N-th row (subsample dense datasets)")
     args = parser.parse_args()
-    run_all(alphas=args.alphas, nskip_values=args.nskips)
+    run_all(alphas=args.alphas, nskip_values=args.nskips, tag=args.tag,
+            beta_min=args.beta_min, beta_max=args.beta_max, stride=args.stride)
 
 
 if __name__ == "__main__":

@@ -27,8 +27,11 @@ structure better than t-SNE. The idea for phase detection:
 
 Usage
 -----
-    python3.11 -m ssh_ml_phase.umap_method                   # run all alphas
-    python3.11 -m ssh_ml_phase.umap_method --alphas 0.240    # single alpha
+    python3.11 -m ssh_ml_phase.umap_method                                              # run all alphas
+    python3.11 -m ssh_ml_phase.umap_method --alphas 0.240                               # single alpha
+    python3.11 -m ssh_ml_phase.umap_method --beta-min 8.0                               # skip low-beta region
+    python3.11 -m ssh_ml_phase.umap_method --file-template "GF_L12_a{alpha:.4f}.csv"    # new observable
+    python3.11 -m ssh_ml_phase.umap_method --tag bmin8                                  # explicit output label
 """
 import argparse
 import numpy as np
@@ -43,7 +46,7 @@ except ImportError:
     HAS_UMAP = False
 
 from .config import ALPHAS, FSS_DICT
-from .data import load_data, ensure_results_dir
+from .data import load_beta_sweep, ensure_results_dir, make_tag, result_filename
 
 
 def sigmoid_fit(beta, beta_c, w):
@@ -58,7 +61,9 @@ def sigmoid_deriv(beta, beta_c, w):
     return s * (1.0 - s) / w
 
 
-def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50):
+def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
+                      beta_min=None, beta_max=None, stride=None,
+                      file_template=None):
     """
     Run UMAP + KMeans clustering for a single alpha value.
 
@@ -86,7 +91,8 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50):
     if not HAS_UMAP:
         raise ImportError("umap-learn is required. Install with: pip install umap-learn")
 
-    X, betas = load_data(alpha)
+    X, betas = load_beta_sweep(alpha, beta_min=beta_min, beta_max=beta_max,
+                               stride=stride, file_template=file_template)
     X_centered = X - X.mean(axis=0)
     u_beta = np.unique(betas)
     fss_bc = FSS_DICT.get(alpha, np.mean(u_beta))
@@ -150,7 +156,8 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50):
     }
 
 
-def run_all(alphas=None):
+def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
+            file_template=None, tag=None):
     """
     Run UMAP analysis for all alphas. Saves to results/umap_results.npz.
 
@@ -168,7 +175,8 @@ def run_all(alphas=None):
 
     for alpha in alphas:
         print(f"[UMAP] alpha={alpha:.3f} ...")
-        res = run_umap_analysis(alpha)
+        res = run_umap_analysis(alpha, beta_min=beta_min, beta_max=beta_max,
+                                stride=stride, file_template=file_template)
         all_results[alpha] = res
 
         fss = FSS_DICT.get(alpha, np.nan)
@@ -202,20 +210,31 @@ def run_all(alphas=None):
         save_dict[f"{key}_emb_betas"] = r["betas"][idx]
         save_dict[f"{key}_emb_km"]    = r["km_labels"][idx]
 
-    np.savez(f"{results_dir}/umap_results.npz", **save_dict)
-    print(f"\nResults saved to {results_dir}/umap_results.npz")
+    fname = result_filename("umap", make_tag(beta_min, file_template, tag,
+                                            beta_max=beta_max, stride=stride))
+    np.savez(f"{results_dir}/{fname}", **save_dict)
+    print(f"\nResults saved to {results_dir}/{fname}")
 
     return all_results
 
 
 def main():
     parser = argparse.ArgumentParser(description="UMAP-based beta_c extraction")
-    parser.add_argument(
-        "--alphas", nargs="+", type=float, default=None,
-        help="Alpha values to process (default: all four)"
-    )
+    parser.add_argument("--alphas", nargs="+", type=float, default=None,
+                        help="Alpha values to process (default: all)")
+    parser.add_argument("--beta-min", type=float, default=None,
+                        help="Discard samples with beta < this value")
+    parser.add_argument("--beta-max", type=float, default=None,
+                        help="Discard samples with beta > this value")
+    parser.add_argument("--stride", type=int, default=None,
+                        help="Use every N-th row (subsample dense datasets)")
+    parser.add_argument("--file-template", type=str, default=None,
+                        help="Filename template with {alpha:.4f} placeholder")
+    parser.add_argument("--tag", type=str, default=None,
+                        help="Label appended to output filename (auto-generated if omitted)")
     args = parser.parse_args()
-    run_all(alphas=args.alphas)
+    run_all(alphas=args.alphas, beta_min=args.beta_min, beta_max=args.beta_max,
+            stride=args.stride, file_template=args.file_template, tag=args.tag)
 
 
 if __name__ == "__main__":

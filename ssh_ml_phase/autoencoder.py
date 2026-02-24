@@ -1,34 +1,37 @@
 """
 Autoencoder anomaly detection for phase transition detection.
 
+Architecture
+------------
+A fully-connected (MLP) autoencoder with a tight 2D bottleneck is used instead
+of a CNN.  The bond-bond data lives in *momentum space* — there is no meaningful
+spatial locality in the Brillouin zone, so convolutional filters would be
+physically unmotivated.  An MLP treats all k-points on equal footing.
+
 Strategy
 --------
-Train the autoencoder on ALL snapshots with a **tight bottleneck** (latent_dim=2).
-The small bottleneck forces the network to learn the dominant mode of variation
-— the order parameter — so the latent space acts like a learned PCA.
+Train on ALL snapshots with a latent_dim=2 bottleneck.  The bottleneck forces
+the network to learn the dominant mode of variation — the order parameter —
+so the latent space acts like a learned, non-linear PCA.
 
-beta_c is extracted from:
-  1. **Derivative peak** — The steepest change in mean reconstruction error
-     locates the transition, analogous to the derivative of <|P1|> in PCA.
-     Gaussian smoothing (sigma=1) is applied before finding the peak to
-     suppress noise.
-  2. **Latent-space derivative** — d<|z_0|>/d(beta) peak (Gaussian-smoothed),
-     where z_0 is the leading latent dimension (learned order parameter).
-  3. **Variance peak** — Var(reconstruction_error) at each beta may peak at
-     beta_c, but is noisier than the derivative methods.
-  4. **Latent KMeans** — KMeans (k=2) on the 2D latent space (z0 vs z1).
-     Identifies ordered (KVBS) and disordered (SM) phases by cluster
-     membership, then fits a sigmoid to f_KVBS(beta) to extract beta_c.
-
-Robustness:
-  - Average over multiple random seeds.
-  - Global standardization (zero mean, unit variance) for stable training.
+beta_c extraction
+-----------------
+1. **Var(z0) susceptibility** (primary) — Var(z0)(beta) peaks at beta_c, exactly
+   like the PCA susceptibility Var(P1)(beta).  Gaussian smoothing + smooth argmax
+   gives the most robust estimate.
+2. **Latent KMeans** — KMeans (k=2) on the 2D latent space.  Sigmoid fit to
+   f_KVBS(beta) and its derivative peak give two additional estimates.
+3. **Reconstruction error** (secondary) — mean reconstruction error is
+   monotonically decreasing; its smoothed derivative peak is a fallback.
 
 Usage
 -----
-    python3.11 -m ssh_ml_phase.autoencoder                    # all alphas
-    python3.11 -m ssh_ml_phase.autoencoder --alphas 0.240     # single alpha
-    python3.11 -m ssh_ml_phase.autoencoder --n-seeds 5        # more seeds
+    python3.11 -m ssh_ml_phase.autoencoder                              # all alphas
+    python3.11 -m ssh_ml_phase.autoencoder --alphas 0.240              # single alpha
+    python3.11 -m ssh_ml_phase.autoencoder --n-seeds 5                 # more seeds
+    python3.11 -m ssh_ml_phase.autoencoder --beta-min 8.0              # skip low-beta region
+    python3.11 -m ssh_ml_phase.autoencoder --file-template "GF_L12_a{alpha:.4f}.csv"  # new observable
+    python3.11 -m ssh_ml_phase.autoencoder --tag bmin8                 # explicit output label
 """
 import argparse
 import numpy as np
@@ -41,8 +44,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from .config import ALPHAS, L, FSS_DICT, DEVICE
-from .data import load_data, ensure_results_dir
+from .config import ALPHAS, FSS_DICT, DEVICE
+from .data import load_beta_sweep, ensure_results_dir, make_tag, result_filename
 
 
 def sigmoid_fit(beta, beta_c, w):
@@ -59,48 +62,49 @@ def decreasing_sigmoid(beta, beta_c, w, A, B):
     return A / (1.0 + np.exp((beta - beta_c) / w)) + B
 
 
-class ConvAutoencoder(nn.Module):
-    """Convolutional autoencoder with a small latent bottleneck."""
+class MLPAutoencoder(nn.Module):
+    """Fully-connected autoencoder with a small latent bottleneck.
 
-    def __init__(self, L=12, latent_dim=2):
+    Parameters
+    ----------
+    n_features : int
+        Dimensionality of the input (number of k-space features).
+    latent_dim : int
+        Bottleneck dimension (default 2).
+    """
+
+    def __init__(self, n_features, latent_dim=2):
         super().__init__()
-        self.L = L
-        self.latent_dim = latent_dim
-
-        self.encoder_conv = nn.Sequential(
-            nn.Conv2d(1, 16, 3, padding=1),
+        self.encoder = nn.Sequential(
+            nn.Linear(n_features, 256),
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, padding=1),
+            nn.Linear(256, 64),
             nn.ReLU(),
+            nn.Linear(64, latent_dim),
         )
-        self.encoder_fc = nn.Linear(32 * L * L, latent_dim)
-
-        self.decoder_fc = nn.Linear(latent_dim, 32 * L * L)
-        self.decoder_conv = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, 3, padding=1),
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 64),
             nn.ReLU(),
-            nn.ConvTranspose2d(16, 1, 3, padding=1),
+            nn.Linear(64, 256),
+            nn.ReLU(),
+            nn.Linear(256, n_features),
         )
 
     def encode(self, x):
-        h = self.encoder_conv(x)
-        h = h.view(h.size(0), -1)
-        return self.encoder_fc(h)
+        return self.encoder(x)
 
     def decode(self, z):
-        h = self.decoder_fc(z)
-        h = h.view(h.size(0), 32, self.L, self.L)
-        return self.decoder_conv(h)
+        return self.decoder(z)
 
     def forward(self, x):
         z = self.encode(x)
         return self.decode(z), z
 
 
-def _single_run(X_norm, betas, u_beta, latent_dim, nepochs, batch_size,
-                lr, seed, verbose):
+def _single_run(X_norm, betas, u_beta, n_features, latent_dim, nepochs,
+                batch_size, lr, seed, verbose):
     """Train one AE and return per-sample errors and latent vectors."""
-    X_t = torch.tensor(X_norm.reshape(-1, 1, L, L), dtype=torch.float32)
+    X_t = torch.tensor(X_norm, dtype=torch.float32)  # shape (N, n_features)
 
     n_val = max(int(0.1 * len(X_t)), 1)
     gen = torch.Generator().manual_seed(seed)
@@ -115,7 +119,7 @@ def _single_run(X_norm, betas, u_beta, latent_dim, nepochs, batch_size,
     )
 
     torch.manual_seed(seed)
-    model = ConvAutoencoder(L=L, latent_dim=latent_dim).to(DEVICE)
+    model = MLPAutoencoder(n_features=n_features, latent_dim=latent_dim).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
     criterion = nn.MSELoss()
@@ -163,7 +167,7 @@ def _single_run(X_norm, betas, u_beta, latent_dim, nepochs, batch_size,
         for (xb,) in full_loader:
             xb = xb.to(DEVICE)
             recon, z = model(xb)
-            errors = ((recon - xb) ** 2).mean(dim=(1, 2, 3))
+            errors = ((recon - xb) ** 2).mean(dim=1)  # per-sample MSE
             all_errors.append(errors.cpu().numpy())
             all_latent.append(z.cpu().numpy())
 
@@ -171,20 +175,25 @@ def _single_run(X_norm, betas, u_beta, latent_dim, nepochs, batch_size,
 
 
 def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
-                       lr=1e-3, n_seeds=3, verbose=True):
+                       lr=1e-3, n_seeds=3, verbose=True,
+                       beta_min=None, beta_max=None, stride=None,
+                       file_template=None):
     """
-    Train autoencoder (multi-seed average) and extract beta_c.
-
-    Trains on ALL data with a tight bottleneck (latent_dim=2). The bottleneck
-    forces the AE to learn the dominant mode of variation (the order parameter).
+    Train MLP autoencoder (multi-seed average) and extract beta_c.
 
     Parameters
     ----------
+    beta_min : float or None
+        Discard samples with beta < beta_min before training.
+    file_template : str or None
+        Override the default filename template.
     n_seeds : int
         Number of random seeds to average over for robustness.
     """
-    X, betas = load_data(alpha)
+    X, betas = load_beta_sweep(alpha, beta_min=beta_min, beta_max=beta_max,
+                               stride=stride, file_template=file_template)
     u_beta = np.unique(betas)
+    n_features = X.shape[1]
     fss_bc = FSS_DICT.get(alpha, float(np.mean(u_beta)))
 
     # Global standardization (zero mean, unit variance per feature)
@@ -193,78 +202,55 @@ def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
     X_norm = (X - X_mean) / X_std
 
     if verbose:
-        print(f"  Training on all {len(u_beta)} beta values, {n_seeds} seeds...")
+        print(f"  n_features={n_features}, n_beta={len(u_beta)}, "
+              f"N={len(X)}, {n_seeds} seeds...")
 
-    # Run multiple seeds and collect per-sample errors
+    # ── Multi-seed training ───────────────────────────────────────────────────
     all_seed_errors = []
     all_seed_latent = []
     for s in range(n_seeds):
         seed = 42 + s * 100
         errs, lats = _single_run(
-            X_norm, betas, u_beta, latent_dim, nepochs, batch_size,
-            lr, seed, verbose,
+            X_norm, betas, u_beta, n_features, latent_dim, nepochs,
+            batch_size, lr, seed, verbose,
         )
         all_seed_errors.append(errs)
         all_seed_latent.append(lats)
         if verbose:
-            me = np.array([np.mean(errs[betas == b]) for b in u_beta])
-            d_me = np.abs(np.diff(me) / np.diff(u_beta))
-            bm = 0.5 * (u_beta[:-1] + u_beta[1:])
-            print(f"    seed {s}: deriv peak at beta={bm[np.argmax(d_me)]:.1f}")
+            var_z0 = np.array([np.var(lats[betas == b, 0]) for b in u_beta])
+            var_z0_sm = gaussian_filter1d(var_z0, sigma=2)
+            bc_var = float(u_beta[np.argmax(var_z0_sm)])
+            print(f"    seed {s}: Var(z0) peak at beta={bc_var:.1f}")
 
-    # Average reconstruction errors across seeds
+    # Average reconstruction errors; use first-seed latent for clustering
     avg_errors = np.mean(all_seed_errors, axis=0)
-    # Use latent from first seed for visualization and clustering
     latent = all_seed_latent[0]
 
-    # ── Per-beta statistics ───────────────────────────────────────────────
+    # ── Per-beta statistics ───────────────────────────────────────────────────
     mean_error = np.array([np.mean(avg_errors[betas == b]) for b in u_beta])
     var_error  = np.array([np.var(avg_errors[betas == b])  for b in u_beta])
     std_error  = np.sqrt(var_error)
 
-    # Latent stats
-    var_z0      = np.array([np.var(latent[betas == b, 0])            for b in u_beta])
-    mean_abs_z0 = np.array([np.mean(np.abs(latent[betas == b, 0]))   for b in u_beta])
+    var_z0      = np.array([np.var(latent[betas == b, 0])          for b in u_beta])
+    mean_abs_z0 = np.array([np.mean(np.abs(latent[betas == b, 0])) for b in u_beta])
 
-    # ── Extract beta_c ────────────────────────────────────────────────────
+    # ── Method 1: Var(z0) susceptibility — primary estimator ─────────────────
+    # Exactly analogous to the PCA susceptibility Var(P1).  The variance of the
+    # leading latent coordinate peaks at beta_c where the bottleneck is most
+    # uncertain about how to compress the configuration.
+    var_z0_sm       = gaussian_filter1d(var_z0, sigma=2)
+    bc_var_z0_sm    = float(u_beta[np.argmax(var_z0_sm)])
+
     beta_mid = 0.5 * (u_beta[:-1] + u_beta[1:])
+    d_var_z0_sm = np.diff(var_z0_sm) / np.diff(u_beta)
 
-    # Method 1: Derivative of mean reconstruction error (Gaussian-smoothed)
-    # Skip the first `deriv_skip` indices to avoid spurious peaks from
-    # low-beta finite-difference noise (beta < ~3).
+    # ── Method 2: Reconstruction error derivative (fallback) ─────────────────
     deriv_skip   = 4
     d_err        = np.diff(mean_error) / np.diff(u_beta)
     d_err_smooth = gaussian_filter1d(np.abs(d_err), sigma=2)
     bc_deriv     = float(beta_mid[deriv_skip + np.argmax(d_err_smooth[deriv_skip:])])
 
-    # Method 2: Derivative of mean |z_0| (learned order parameter, smoothed)
-    d_z0        = np.diff(mean_abs_z0) / np.diff(u_beta)
-    d_z0_smooth = gaussian_filter1d(np.abs(d_z0), sigma=2)
-    bc_z0_deriv = float(beta_mid[deriv_skip + np.argmax(d_z0_smooth[deriv_skip:])])
-
-    # Method 3: Variance peak of reconstruction error
-    bc_var = u_beta[np.argmax(var_error)]
-
-    # Method 5: Sigmoid fit to mean_error (most robust)
-    # mean_error is a monotonically decreasing function (high in disordered
-    # phase, low in ordered phase) — a decreasing sigmoid whose midpoint is
-    # beta_c.  This uses ALL data points and is robust to low-beta noise.
-    try:
-        A0 = float(mean_error.max() - mean_error.min())
-        B0 = float(mean_error.min())
-        popt_err_sig, _ = curve_fit(
-            decreasing_sigmoid, u_beta, mean_error,
-            p0=[fss_bc, 3.0, A0, B0],
-            bounds=([u_beta[3], 0.5, 0.0, -np.inf],
-                    [u_beta[-3], 20.0, np.inf, np.inf]),
-            maxfev=10000,
-        )
-        bc_err_sig = float(popt_err_sig[0])
-    except Exception:
-        popt_err_sig = None
-        bc_err_sig = np.nan
-
-    # Method 4: KMeans on 2D latent space (z0 vs z1)
+    # ── Method 3: Latent KMeans ───────────────────────────────────────────────
     bc_lat_km       = np.nan
     bc_lat_km_deriv = np.nan
     f_kvbs_lat      = None
@@ -290,15 +276,15 @@ def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
                 bounds=([u_beta[2], 0.1], [u_beta[-3], 20.0]),
                 maxfev=10000,
             )
-            bc_lat_km = popt_lat[0]
+            bc_lat_km = float(popt_lat[0])
         except Exception:
             popt_lat = None
 
         d_flat = np.diff(f_kvbs_lat) / np.diff(u_beta)
-        bc_lat_km_deriv = beta_mid[np.argmax(d_flat)]
+        bc_lat_km_deriv = float(beta_mid[np.argmax(d_flat)])
 
-    # Best estimate: sigmoid fit to mean_error if converged, else derivative
-    bc_best = bc_err_sig if not np.isnan(bc_err_sig) else bc_deriv
+    # ── Best estimate: Var(z0) smooth argmax ─────────────────────────────────
+    bc_best = bc_var_z0_sm
 
     return {
         "u_beta":       u_beta,
@@ -306,24 +292,21 @@ def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
         "var_error":    var_error,
         "std_error":    std_error,
         "var_z0":       var_z0,
+        "var_z0_sm":    var_z0_sm,
         "mean_abs_z0":  mean_abs_z0,
         "all_errors":   avg_errors,
         "latent":       latent,
         "betas":        betas,
         # beta_c estimates
+        "beta_c_var_z0_sm":    bc_var_z0_sm,
         "beta_c_deriv":        bc_deriv,
-        "beta_c_z0_deriv":     bc_z0_deriv,
-        "beta_c_var":          bc_var,
         "beta_c_lat_km":       bc_lat_km,
         "beta_c_lat_km_deriv": bc_lat_km_deriv,
-        "beta_c_err_sig":      bc_err_sig,
         "beta_c_best":         bc_best,
         # curves
-        "deriv_curve":     (beta_mid, d_err),
-        "z0_deriv_curve":  (beta_mid, d_z0),
-        "d_err_smooth":    d_err_smooth,
-        "d_z0_smooth":     d_z0_smooth,
-        "err_sig_params":  popt_err_sig,
+        "var_z0_deriv_curve":  (beta_mid, d_var_z0_sm),
+        "deriv_curve":         (beta_mid, d_err),
+        "d_err_smooth":        d_err_smooth,
         # latent KMeans
         "lat_labels":  lat_labels,
         "f_kvbs_lat":  f_kvbs_lat,
@@ -331,11 +314,12 @@ def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
     }
 
 
-def run_all(alphas=None, latent_dim=2, n_seeds=3):
+def run_all(alphas=None, latent_dim=2, n_seeds=3, beta_min=None, beta_max=None,
+            stride=None, file_template=None, tag=None):
     """
     Run autoencoder analysis for all alphas. Saves to results/autoencoder_results.npz.
 
-    beta_c array layout: [deriv, z0_deriv, var, lat_km_sig, lat_km_deriv, err_sig, best]
+    beta_c array layout: [var_z0_sm, deriv, lat_km_sig, lat_km_deriv, best]
     """
     if alphas is None:
         alphas = ALPHAS
@@ -345,20 +329,22 @@ def run_all(alphas=None, latent_dim=2, n_seeds=3):
 
     for alpha in alphas:
         print(f"\n[Autoencoder] alpha={alpha:.3f} ...")
-        res = train_and_evaluate(alpha, latent_dim=latent_dim, n_seeds=n_seeds)
+        res = train_and_evaluate(
+            alpha, latent_dim=latent_dim, n_seeds=n_seeds,
+            beta_min=beta_min, beta_max=beta_max, stride=stride,
+            file_template=file_template,
+        )
         all_results[alpha] = res
 
         fss = FSS_DICT.get(alpha, np.nan)
-        err_sig_str = f"{res['beta_c_err_sig']:.1f}" if not np.isnan(res['beta_c_err_sig']) else "nan"
         print(
-            f"  beta_c: deriv={res['beta_c_deriv']:.1f}  "
-            f"z0_deriv={res['beta_c_z0_deriv']:.1f}  "
-            f"var={res['beta_c_var']:.1f}  "
-            f"err_sig={err_sig_str}  "
+            f"  beta_c: var_z0={res['beta_c_var_z0_sm']:.1f}  "
+            f"deriv={res['beta_c_deriv']:.1f}  "
+            f"lat_km={res['beta_c_lat_km']:.1f}  "
             f"best={res['beta_c_best']:.1f}  FSS={fss:.1f}"
         )
 
-    # Save
+    # ── Save ─────────────────────────────────────────────────────────────────
     save_dict = {}
     for alpha in alphas:
         r = all_results[alpha]
@@ -368,20 +354,19 @@ def run_all(alphas=None, latent_dim=2, n_seeds=3):
         save_dict[f"{key}_var_error"]   = r["var_error"]
         save_dict[f"{key}_std_error"]   = r["std_error"]
         save_dict[f"{key}_var_z0"]      = r["var_z0"]
+        save_dict[f"{key}_var_z0_sm"]   = r["var_z0_sm"]
         save_dict[f"{key}_mean_abs_z0"] = r["mean_abs_z0"]
-        # beta_c: [deriv, z0_deriv, var, lat_km_sig, lat_km_deriv, err_sig, best]
+        # beta_c: [var_z0_sm, deriv, lat_km_sig, lat_km_deriv, best]
         save_dict[f"{key}_beta_c"] = np.array([
-            r["beta_c_deriv"], r["beta_c_z0_deriv"], r["beta_c_var"],
+            r["beta_c_var_z0_sm"], r["beta_c_deriv"],
             r["beta_c_lat_km"], r["beta_c_lat_km_deriv"],
-            r["beta_c_err_sig"], r["beta_c_best"],
+            r["beta_c_best"],
         ])
-        save_dict[f"{key}_deriv_beta"]     = r["deriv_curve"][0]
-        save_dict[f"{key}_deriv_vals"]     = r["deriv_curve"][1]
-        save_dict[f"{key}_z0_deriv_vals"]  = r["z0_deriv_curve"][1]
-        save_dict[f"{key}_d_err_smooth"]   = r["d_err_smooth"]
-        save_dict[f"{key}_d_z0_smooth"]    = r["d_z0_smooth"]
-        if r["err_sig_params"] is not None:
-            save_dict[f"{key}_err_sig_params"] = np.array(r["err_sig_params"])
+        save_dict[f"{key}_var_z0_deriv_beta"] = r["var_z0_deriv_curve"][0]
+        save_dict[f"{key}_var_z0_deriv_vals"] = r["var_z0_deriv_curve"][1]
+        save_dict[f"{key}_deriv_beta"]        = r["deriv_curve"][0]
+        save_dict[f"{key}_deriv_vals"]        = r["deriv_curve"][1]
+        save_dict[f"{key}_d_err_smooth"]      = r["d_err_smooth"]
         # Latent KMeans
         if r["f_kvbs_lat"] is not None:
             save_dict[f"{key}_f_kvbs_lat"] = r["f_kvbs_lat"]
@@ -403,8 +388,10 @@ def run_all(alphas=None, latent_dim=2, n_seeds=3):
             )
             save_dict[f"{key}_mean_z{d}"] = mean_z
 
-    np.savez(f"{results_dir}/autoencoder_results.npz", **save_dict)
-    print(f"\nResults saved to {results_dir}/autoencoder_results.npz")
+    fname = result_filename("autoencoder", make_tag(beta_min, file_template, tag,
+                                                   beta_max=beta_max, stride=stride))
+    np.savez(f"{results_dir}/{fname}", **save_dict)
+    print(f"\nResults saved to {results_dir}/{fname}")
 
     return all_results
 
@@ -414,8 +401,20 @@ def main():
     parser.add_argument("--alphas", nargs="+", type=float, default=None)
     parser.add_argument("--latent-dim", type=int, default=2)
     parser.add_argument("--n-seeds", type=int, default=3)
+    parser.add_argument("--beta-min", type=float, default=None,
+                        help="Discard samples with beta < this value")
+    parser.add_argument("--beta-max", type=float, default=None,
+                        help="Discard samples with beta > this value")
+    parser.add_argument("--stride", type=int, default=None,
+                        help="Use every N-th row (subsample dense datasets)")
+    parser.add_argument("--file-template", type=str, default=None,
+                        help="Filename template with {alpha:.4f} placeholder")
+    parser.add_argument("--tag", type=str, default=None,
+                        help="Label appended to output filename (auto-generated if omitted)")
     args = parser.parse_args()
-    run_all(alphas=args.alphas, latent_dim=args.latent_dim, n_seeds=args.n_seeds)
+    run_all(alphas=args.alphas, latent_dim=args.latent_dim, n_seeds=args.n_seeds,
+            beta_min=args.beta_min, beta_max=args.beta_max, stride=args.stride,
+            file_template=args.file_template, tag=args.tag)
 
 
 if __name__ == "__main__":
