@@ -31,8 +31,8 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 
-from .config import ALPHAS, FSS_BETA_C, FSS_DICT
-from .data import load_beta_sweep, ensure_results_dir, make_tag, result_filename
+from . import config as _cfg
+from .data import load_beta_sweep, load_alpha_sweep, ensure_results_dir, make_tag, result_filename
 
 
 # ── Fit functions ─────────────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ def extract_beta_c(alpha, pca_result=None, beta_min=None, beta_max=None,
     mean_abs_P1_sm  = pca_result["mean_abs_P1_sm"]
     P               = pca_result["P"]
     betas_all       = pca_result["betas"]
-    fss_bc          = FSS_DICT.get(alpha, np.mean(u_beta))
+    fss_bc          = _cfg.FSS_DICT.get(alpha, np.mean(u_beta))
 
     # ── Method 1: argmax of Var(P1) ──────────────────────────────────────────
     bc_argmax_P1 = float(u_beta[np.argmax(var_P1)])
@@ -269,7 +269,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
          mean_P1_deriv_bc]
     """
     if alphas is None:
-        alphas = ALPHAS
+        alphas = _cfg.ALPHAS
 
     results_dir = ensure_results_dir()
     all_results = {}
@@ -280,7 +280,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
                              stride=stride, file_template=file_template)
         all_results[alpha] = res
 
-        fss = FSS_DICT.get(alpha, np.nan)
+        fss = _cfg.FSS_DICT.get(alpha, np.nan)
         print(
             f"  sm_argmax_P1={res['sm_argmax_P1']:.1f}  "
             f"mean_P1_deriv={res['mean_P1_deriv_bc']:.1f}  "
@@ -345,8 +345,226 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
     return all_results
 
 
+# ── Alpha-sweep variants ──────────────────────────────────────────────────────
+# These mirror run_pca / extract_beta_c / run_all but operate on a fixed-beta,
+# varying-alpha file (load_alpha_sweep).  Statistics and clustering are computed
+# as a function of alpha instead of beta, and the ordering convention is
+# reversed: HIGH alpha = CDW (ordered) phase.
+
+def run_pca_alpha_sweep(beta, file_template, n_components=10,
+                        alpha_min=None, alpha_max=None):
+    """
+    Run PCA on alpha-sweep data (fixed beta, varying alpha).
+
+    Returns
+    -------
+    dict with same keys as run_pca but keyed on alpha:
+        'P', 'alphas', 'u_alpha',
+        'mean_P1', 'mean_abs_P1', 'mean_abs_P1_sm',
+        'var_P1', 'var_P1_sm', 'mean_abs_P2', 'var_P2', 'var_P2_sm',
+        'explained_var'
+    """
+    X, alphas = load_alpha_sweep(beta, file_template=file_template,
+                                 alpha_min=alpha_min, alpha_max=alpha_max)
+    X_centered = X - X.mean(axis=0)
+
+    pca = PCA(n_components=n_components)
+    P = pca.fit_transform(X_centered)
+
+    u_alpha = np.unique(alphas)
+    mean_P1     = np.array([np.mean(P[alphas == a, 0])         for a in u_alpha])
+    mean_abs_P1 = np.array([np.mean(np.abs(P[alphas == a, 0])) for a in u_alpha])
+    var_P1      = np.array([np.var(P[alphas == a, 0])           for a in u_alpha])
+    mean_abs_P2 = np.array([np.mean(np.abs(P[alphas == a, 1])) for a in u_alpha])
+    var_P2      = np.array([np.var(P[alphas == a, 1])           for a in u_alpha])
+    mean_abs_P1_sm = gaussian_filter1d(mean_abs_P1, sigma=2)
+
+    return {
+        "P":               P,
+        "alphas":          alphas,
+        "u_alpha":         u_alpha,
+        "mean_P1":         mean_P1,
+        "mean_abs_P1":     mean_abs_P1,
+        "mean_abs_P1_sm":  mean_abs_P1_sm,
+        "var_P1":          var_P1,
+        "var_P1_sm":       gaussian_filter1d(var_P1, sigma=2),
+        "mean_abs_P2":     mean_abs_P2,
+        "var_P2":          var_P2,
+        "var_P2_sm":       gaussian_filter1d(var_P2, sigma=2),
+        "explained_var":   pca.explained_variance_ratio_,
+    }
+
+
+def extract_alpha_c(beta, file_template, pca_result=None,
+                    alpha_min=None, alpha_max=None, fss_alpha_c=None):
+    """
+    Extract critical alpha using PCA susceptibility and KMeans on alpha-sweep data.
+
+    Parameters
+    ----------
+    fss_alpha_c : float or None
+        Expected critical alpha (used as sigmoid fit initial guess).
+        Defaults to the midpoint of u_alpha if not provided.
+
+    Returns dict analogous to extract_beta_c, with keys:
+        'argmax_P1', 'argmax_P2', 'sm_argmax_P1', 'sm_argmax_P2',
+        'km_sig', 'km_sig_err', 'km_deriv', 'mean_P1_deriv_ac', 'best',
+        'f_cdw_km', 'km_labels', 'km_sig_popt', 'pca_result',
+        'var1_deriv_curve', 'var2_deriv_curve',
+        'mean_P1_deriv_curve', 'km_deriv_curve'
+    """
+    if pca_result is None:
+        pca_result = run_pca_alpha_sweep(beta, file_template,
+                                         alpha_min=alpha_min, alpha_max=alpha_max)
+
+    u_alpha        = pca_result["u_alpha"]
+    var_P1         = pca_result["var_P1"]
+    var_P1_sm      = pca_result["var_P1_sm"]
+    var_P2         = pca_result["var_P2"]
+    var_P2_sm      = pca_result["var_P2_sm"]
+    mean_abs_P1_sm = pca_result["mean_abs_P1_sm"]
+    P              = pca_result["P"]
+    alphas_all     = pca_result["alphas"]
+
+    if fss_alpha_c is None:
+        fss_alpha_c = float(np.mean(u_alpha))
+
+    # ── Argmax estimators ────────────────────────────────────────────────────
+    ac_argmax_P1    = float(u_alpha[np.argmax(var_P1)])
+    ac_argmax_P2    = float(u_alpha[np.argmax(var_P2)])
+    ac_sm_argmax_P1 = float(u_alpha[np.argmax(var_P1_sm)])
+    ac_sm_argmax_P2 = float(u_alpha[np.argmax(var_P2_sm)])
+
+    # ── Derivative curves ────────────────────────────────────────────────────
+    alpha_mid   = 0.5 * (u_alpha[:-1] + u_alpha[1:])
+    d_var_sm1   = np.diff(var_P1_sm)   / np.diff(u_alpha)
+    d_var_sm2   = np.diff(var_P2_sm)   / np.diff(u_alpha)
+    d_mean_abs  = np.diff(mean_abs_P1_sm) / np.diff(u_alpha)
+    ac_mean_P1_deriv = float(alpha_mid[np.argmax(d_mean_abs)])
+
+    # ── KMeans: high alpha = CDW (ordered) phase ─────────────────────────────
+    km = KMeans(n_clusters=2, random_state=42, n_init=10)
+    km_labels = km.fit_predict(P[:, :2])
+
+    mean_alpha_0 = np.mean(alphas_all[km_labels == 0])
+    mean_alpha_1 = np.mean(alphas_all[km_labels == 1])
+    cdw_label = 1 if mean_alpha_1 > mean_alpha_0 else 0
+
+    f_cdw_km = np.array(
+        [np.mean(km_labels[alphas_all == a] == cdw_label) for a in u_alpha]
+    )
+
+    try:
+        popt_km, pcov_km = curve_fit(
+            sigmoid_fit, u_alpha, f_cdw_km,
+            p0=[fss_alpha_c, 0.3],
+            bounds=([u_alpha[2], 0.01], [u_alpha[-3], 5.0]),
+            maxfev=10000,
+        )
+        ac_km     = float(popt_km[0])
+        ac_km_err = float(np.sqrt(pcov_km[0, 0]))
+    except Exception:
+        ac_km     = np.nan
+        ac_km_err = np.nan
+        popt_km   = None
+
+    d_fkm       = np.diff(f_cdw_km) / np.diff(u_alpha)
+    ac_km_deriv = float(alpha_mid[np.argmax(d_fkm)])
+
+    return {
+        "argmax_P1":           ac_argmax_P1,
+        "argmax_P2":           ac_argmax_P2,
+        "sm_argmax_P1":        ac_sm_argmax_P1,
+        "sm_argmax_P2":        ac_sm_argmax_P2,
+        "km_sig":              ac_km,
+        "km_sig_err":          ac_km_err,
+        "km_deriv":            ac_km_deriv,
+        "mean_P1_deriv_ac":    ac_mean_P1_deriv,
+        "best":                ac_sm_argmax_P1,
+        "var1_deriv_curve":    (alpha_mid, d_var_sm1),
+        "var2_deriv_curve":    (alpha_mid, d_var_sm2),
+        "mean_P1_deriv_curve": (alpha_mid, d_mean_abs),
+        "km_deriv_curve":      (alpha_mid, d_fkm),
+        "km_labels":           km_labels,
+        "f_cdw_km":            f_cdw_km,
+        "km_sig_popt":         popt_km,
+        "pca_result":          pca_result,
+    }
+
+
+def run_all_alpha_sweep(betas, file_template, alpha_min=None, alpha_max=None,
+                        fss_alpha_c=None, tag=None):
+    """
+    Run PCA alpha-sweep analysis for one or more fixed-beta files.
+    Saves results to results/pca_results_alpha_sweep[_tag].npz.
+
+    alpha_c array layout per beta key:
+        [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best,
+         mean_P1_deriv_ac]
+    """
+    results_dir = ensure_results_dir()
+    all_results = {}
+
+    for beta in betas:
+        print(f"[PCA alpha-sweep] beta={beta:.2f} ...")
+        res = extract_alpha_c(beta, file_template,
+                              alpha_min=alpha_min, alpha_max=alpha_max,
+                              fss_alpha_c=fss_alpha_c)
+        all_results[beta] = res
+        fss_str = f"{fss_alpha_c:.3f}" if fss_alpha_c is not None else "None"
+        print(
+            f"  sm_argmax_P1={res['sm_argmax_P1']:.3f}  "
+            f"km_sig={res['km_sig']:.3f}±{res['km_sig_err']:.4f}  "
+            f"km_deriv={res['km_deriv']:.3f}  FSS_alpha_c={fss_str}"
+        )
+
+    # Save
+    save_dict = {}
+    for beta in betas:
+        r  = all_results[beta]
+        pr = r["pca_result"]
+        key = f"b{beta:.2f}"
+        save_dict[f"{key}_u_alpha"]          = pr["u_alpha"]
+        save_dict[f"{key}_mean_P1"]          = pr["mean_P1"]
+        save_dict[f"{key}_mean_abs_P1"]      = pr["mean_abs_P1"]
+        save_dict[f"{key}_mean_abs_P1_sm"]   = pr["mean_abs_P1_sm"]
+        save_dict[f"{key}_var_P1"]           = pr["var_P1"]
+        save_dict[f"{key}_var_P1_sm"]        = pr["var_P1_sm"]
+        save_dict[f"{key}_mean_abs_P2"]      = pr["mean_abs_P2"]
+        save_dict[f"{key}_var_P2"]           = pr["var_P2"]
+        save_dict[f"{key}_var_P2_sm"]        = pr["var_P2_sm"]
+        save_dict[f"{key}_explained_var"]    = pr["explained_var"]
+        save_dict[f"{key}_alpha_c"] = np.array([
+            r["argmax_P1"], r["argmax_P2"],
+            r["km_sig"], r["km_sig_err"], r["km_deriv"], r["best"],
+            r["mean_P1_deriv_ac"],
+        ])
+        save_dict[f"{key}_f_cdw_km"]         = r["f_cdw_km"]
+        save_dict[f"{key}_km_deriv_alpha"]   = r["km_deriv_curve"][0]
+        save_dict[f"{key}_km_deriv_vals"]    = r["km_deriv_curve"][1]
+        if r["km_sig_popt"] is not None:
+            save_dict[f"{key}_km_sig_popt"]  = np.array(r["km_sig_popt"])
+        P      = pr["P"]
+        alphas = pr["alphas"]
+        idx = np.random.default_rng(42).choice(len(P), min(5000, len(P)), replace=False)
+        save_dict[f"{key}_P1_sample"]        = P[idx, 0]
+        save_dict[f"{key}_P2_sample"]        = P[idx, 1]
+        save_dict[f"{key}_alphas_sample"]    = alphas[idx]
+        save_dict[f"{key}_km_labels_sample"] = r["km_labels"][idx]
+
+    suffix = f"_{tag}" if tag else "_alpha_sweep"
+    fname  = f"pca_results{suffix}.npz"
+    np.savez(f"{results_dir}/{fname}", **save_dict)
+    print(f"\nResults saved to {results_dir}/{fname}")
+    return all_results
+
+
 def main():
     parser = argparse.ArgumentParser(description="PCA-based beta_c extraction")
+    parser.add_argument("--model", type=str, default=None,
+                        choices=list(_cfg.MODEL_CONFIGS),
+                        help="Named model preset (sets alphas, file-template, FSS). "
+                             "Explicit --alphas / --file-template override the preset.")
     parser.add_argument("--alphas", nargs="+", type=float, default=None,
                         help="Alpha values to process (default: all)")
     parser.add_argument("--beta-min", type=float, default=None,
@@ -357,11 +575,45 @@ def main():
                         help="Use every N-th row (subsample dense datasets)")
     parser.add_argument("--file-template", type=str, default=None,
                         help="Filename template with {alpha:.4f} placeholder")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Directory containing input CSV files")
     parser.add_argument("--tag", type=str, default=None,
                         help="Label appended to output filename (auto-generated if omitted)")
+    parser.add_argument("--alpha-sweep", action="store_true",
+                        help="Alpha-sweep mode: fixed beta, varying alpha. "
+                             "Requires --betas and --file-template (or model preset "
+                             "with ALPHA_SWEEP_FILE_TEMPLATE).")
+    parser.add_argument("--betas", nargs="+", type=float, default=None,
+                        help="Fixed beta value(s) for alpha-sweep mode")
+    parser.add_argument("--fss-alpha-c", type=float, default=None,
+                        help="Expected critical alpha (sigmoid fit initial guess, "
+                             "alpha-sweep mode only)")
     args = parser.parse_args()
-    run_all(alphas=args.alphas, beta_min=args.beta_min, beta_max=args.beta_max,
-            stride=args.stride, file_template=args.file_template, tag=args.tag)
+
+    if args.model is not None:
+        _cfg.apply_model(args.model)
+    if args.data_dir is not None:
+        _cfg.DATA_DIR = args.data_dir
+
+    if args.alpha_sweep:
+        if args.betas is None:
+            parser.error("--alpha-sweep requires --betas")
+        file_template = (args.file_template
+                         or getattr(_cfg, "ALPHA_SWEEP_FILE_TEMPLATE", None))
+        if file_template is None:
+            parser.error("Alpha-sweep mode needs --file-template or "
+                         "ALPHA_SWEEP_FILE_TEMPLATE in model config")
+        run_all_alpha_sweep(
+            betas=args.betas,
+            file_template=file_template,
+            fss_alpha_c=args.fss_alpha_c,
+            tag=args.tag,
+        )
+    else:
+        alphas        = args.alphas        or _cfg.ALPHAS
+        file_template = args.file_template or _cfg.FILE_TEMPLATE
+        run_all(alphas=alphas, beta_min=args.beta_min, beta_max=args.beta_max,
+                stride=args.stride, file_template=file_template, tag=args.tag)
 
 
 if __name__ == "__main__":

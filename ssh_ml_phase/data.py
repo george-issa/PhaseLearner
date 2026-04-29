@@ -176,10 +176,14 @@ def make_tag(beta_min=None, file_template=None, tag=None,
     # config default so the observable name always appears in the tag.
     effective_template = file_template if file_template is not None else DEFAULT_FILE_TEMPLATE
     if effective_template is not None:
-        # Extract observable label: everything up to the first "_L"
-        # e.g. "greens0_momentum_L12_..."       → "greens0_momentum"
-        #      "BondBond012345_momentum_L12_..." → "BondBond012345_momentum"
+        # Extract observable label: everything up to the first "_L", then strip
+        # any underscore-separated segments that contain a format placeholder
+        # (e.g. "_a{alpha:.4f}") so Holstein tags stay readable.
+        # e.g. "greens0_momentum_L12_..."                       → "greens0_momentum"
+        #      "BondBond012345_momentum_L12_..."                → "BondBond012345_momentum"
+        #      "electron_densities_w1.00_a{alpha:.4f}_L12-1.csv"→ "electron_densities_w1.00"
         base = effective_template.split("_L")[0]
+        base = "_".join(seg for seg in base.split("_") if "{" not in seg)
         parts.append(base)
     if beta_min is not None:
         parts.append(f"bmin{beta_min:g}")

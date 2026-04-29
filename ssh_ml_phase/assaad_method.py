@@ -21,7 +21,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from .config import ALPHAS, L, FSS_DICT, DEVICE
+from . import config as _cfg
+from .config import DEVICE
 from .data import load_beta_sweep, ensure_results_dir, result_filename
 
 
@@ -55,7 +56,7 @@ class CNN_GI(nn.Module):
 
 
 def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=False,
-               beta_min=None, beta_max=None, stride=None):
+               beta_min=None, beta_max=None, stride=None, file_template=None):
     """
     Run the Assaad method for one (alpha, nskip) pair.
 
@@ -64,8 +65,9 @@ def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=Fal
     trunc_betas : ndarray — guessed beta_c values
     test_accs   : ndarray — test accuracy at each guess
     """
+    L = _cfg.L
     X, betas = load_beta_sweep(alpha, beta_min=beta_min, beta_max=beta_max,
-                               stride=stride)
+                               stride=stride, file_template=file_template)
     u_beta = np.unique(betas)
     NL = len(u_beta)
     half = nskip // 2
@@ -159,13 +161,13 @@ def run_single(alpha, nskip, nepochs=60, batch_size=32, patience=15, verbose=Fal
 
 
 def run_all(alphas=None, nskip_values=None, tag=None,
-            beta_min=None, beta_max=None, stride=None):
+            beta_min=None, beta_max=None, stride=None, file_template=None):
     """
     Run Assaad method for all alphas and nskip values.
     Saves to results/assaad_results.npz.
     """
     if alphas is None:
-        alphas = ALPHAS
+        alphas = _cfg.ALPHAS
     if nskip_values is None:
         nskip_values = [4, 6, 8]
 
@@ -178,11 +180,11 @@ def run_all(alphas=None, nskip_values=None, tag=None,
             print(f"[Assaad] alpha={alpha:.3f}, nskip={nskip} ...")
             trunc_betas, accs = run_single(alpha, nskip, verbose=False,
                                            beta_min=beta_min, beta_max=beta_max,
-                                           stride=stride)
+                                           stride=stride, file_template=file_template)
             all_results[alpha][nskip] = {"betas": trunc_betas, "accs": accs}
 
             bc_est = trunc_betas[np.argmax(accs)]
-            fss = FSS_DICT.get(alpha, np.nan)
+            fss = _cfg.FSS_DICT.get(alpha, np.nan)
             print(f"  beta_c={bc_est:.1f}  peak_acc={np.max(accs):.4f}  FSS={fss:.1f}")
 
     # Save
@@ -206,6 +208,10 @@ def run_all(alphas=None, nskip_values=None, tag=None,
 
 def main():
     parser = argparse.ArgumentParser(description="Assaad (GI) method for beta_c")
+    parser.add_argument("--model", type=str, default=None,
+                        choices=list(_cfg.MODEL_CONFIGS),
+                        help="Named model preset (sets alphas, file-template, FSS). "
+                             "Explicit --alphas / --file-template override the preset.")
     parser.add_argument("--alphas", nargs="+", type=float, default=None)
     parser.add_argument("--nskips", nargs="+", type=int, default=None)
     parser.add_argument("--tag", type=str, default=None,
@@ -214,9 +220,23 @@ def main():
     parser.add_argument("--beta-max", type=float, default=None)
     parser.add_argument("--stride", type=int, default=None,
                         help="Use every N-th row (subsample dense datasets)")
+    parser.add_argument("--file-template", type=str, default=None,
+                        help="Filename template with {alpha:.4f} placeholder")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Directory containing input CSV files")
     args = parser.parse_args()
-    run_all(alphas=args.alphas, nskip_values=args.nskips, tag=args.tag,
-            beta_min=args.beta_min, beta_max=args.beta_max, stride=args.stride)
+
+    if args.model is not None:
+        _cfg.apply_model(args.model)
+    if args.data_dir is not None:
+        _cfg.DATA_DIR = args.data_dir
+
+    alphas        = args.alphas        or _cfg.ALPHAS
+    file_template = args.file_template or _cfg.FILE_TEMPLATE
+
+    run_all(alphas=alphas, nskip_values=args.nskips, tag=args.tag,
+            beta_min=args.beta_min, beta_max=args.beta_max, stride=args.stride,
+            file_template=file_template)
 
 
 if __name__ == "__main__":

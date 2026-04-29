@@ -45,8 +45,8 @@ try:
 except ImportError:
     HAS_UMAP = False
 
-from .config import ALPHAS, FSS_DICT
-from .data import load_beta_sweep, ensure_results_dir, make_tag, result_filename
+from . import config as _cfg
+from .data import load_beta_sweep, load_alpha_sweep, ensure_results_dir, make_tag, result_filename
 
 
 def sigmoid_fit(beta, beta_c, w):
@@ -95,7 +95,7 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
                                stride=stride, file_template=file_template)
     X_centered = X - X.mean(axis=0)
     u_beta = np.unique(betas)
-    fss_bc = FSS_DICT.get(alpha, np.mean(u_beta))
+    fss_bc = _cfg.FSS_DICT.get(alpha, np.mean(u_beta))
 
     # PCA pre-reduction for speed
     pca = PCA(n_components=min(pca_dims, X.shape[1]))
@@ -168,7 +168,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
         return {}
 
     if alphas is None:
-        alphas = ALPHAS
+        alphas = _cfg.ALPHAS
 
     results_dir = ensure_results_dir()
     all_results = {}
@@ -179,7 +179,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
                                 stride=stride, file_template=file_template)
         all_results[alpha] = res
 
-        fss = FSS_DICT.get(alpha, np.nan)
+        fss = _cfg.FSS_DICT.get(alpha, np.nan)
         print(
             f"  km_sig={res['km_sig']:.1f}±{res['km_sig_err']:.2f}  "
             f"km_deriv={res['km_deriv']:.1f}  "
@@ -218,8 +218,149 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
     return all_results
 
 
+# ── Alpha-sweep variants ──────────────────────────────────────────────────────
+
+def run_umap_alpha_sweep(beta, file_template, n_neighbors=30, min_dist=0.3,
+                         pca_dims=50, alpha_min=None, alpha_max=None,
+                         fss_alpha_c=None):
+    """
+    Run UMAP + KMeans on alpha-sweep data (fixed beta, varying alpha).
+
+    Returns dict analogous to run_umap_analysis with keys:
+        'embedding', 'alphas', 'u_alpha', 'km_labels', 'f_cdw_km',
+        'km_sig', 'km_sig_err', 'km_deriv', 'best',
+        'km_sig_popt', 'km_deriv_curve'
+    """
+    if not HAS_UMAP:
+        raise ImportError("umap-learn is required. Install with: pip install umap-learn")
+
+    X, alphas = load_alpha_sweep(beta, file_template=file_template,
+                                 alpha_min=alpha_min, alpha_max=alpha_max)
+    X_centered = X - X.mean(axis=0)
+    u_alpha = np.unique(alphas)
+
+    if fss_alpha_c is None:
+        fss_alpha_c = float(np.mean(u_alpha))
+
+    # PCA pre-reduction for speed
+    pca = PCA(n_components=min(pca_dims, X.shape[1]))
+    X_pca = pca.fit_transform(X_centered)
+
+    # UMAP embedding
+    reducer = umap.UMAP(
+        n_components=2, n_neighbors=n_neighbors,
+        min_dist=min_dist, random_state=42,
+    )
+    embedding = reducer.fit_transform(X_pca)
+
+    # ── KMeans: high alpha = CDW (ordered) phase ──────────────────────────────
+    km = KMeans(n_clusters=2, random_state=42, n_init=10)
+    km_labels = km.fit_predict(embedding)
+
+    mean_alpha_0 = np.mean(alphas[km_labels == 0])
+    mean_alpha_1 = np.mean(alphas[km_labels == 1])
+    cdw_label = 1 if mean_alpha_1 > mean_alpha_0 else 0
+
+    f_cdw_km = np.array(
+        [np.mean(km_labels[alphas == a] == cdw_label) for a in u_alpha]
+    )
+
+    # Sigmoid fit
+    try:
+        popt_km, pcov_km = curve_fit(
+            sigmoid_fit, u_alpha, f_cdw_km,
+            p0=[fss_alpha_c, 0.3],
+            bounds=([u_alpha[2], 0.01], [u_alpha[-3], 5.0]),
+            maxfev=10000,
+        )
+        ac_km     = float(popt_km[0])
+        ac_km_err = float(np.sqrt(pcov_km[0, 0]))
+    except Exception:
+        ac_km     = np.nan
+        ac_km_err = np.nan
+        popt_km   = None
+
+    alpha_mid   = 0.5 * (u_alpha[:-1] + u_alpha[1:])
+    d_fkm       = np.diff(f_cdw_km) / np.diff(u_alpha)
+    ac_km_deriv = float(alpha_mid[np.argmax(d_fkm)])
+
+    return {
+        "embedding":      embedding,
+        "alphas":         alphas,
+        "u_alpha":        u_alpha,
+        "km_labels":      km_labels,
+        "f_cdw_km":       f_cdw_km,
+        "km_sig":         ac_km,
+        "km_sig_err":     ac_km_err,
+        "km_deriv":       ac_km_deriv,
+        "best":           ac_km,
+        "km_sig_popt":    popt_km,
+        "km_deriv_curve": (alpha_mid, d_fkm),
+    }
+
+
+def run_all_alpha_sweep(betas, file_template, alpha_min=None, alpha_max=None,
+                        fss_alpha_c=None, tag=None):
+    """
+    Run UMAP alpha-sweep analysis for one or more fixed-beta files.
+    Saves to results/umap_results_alpha_sweep[_tag].npz.
+
+    alpha_c array layout per beta key: [km_sig, km_sig_err, km_deriv, best]
+    """
+    if not HAS_UMAP:
+        print("ERROR: umap-learn not installed. Run: pip install umap-learn")
+        return {}
+
+    results_dir = ensure_results_dir()
+    all_results = {}
+
+    for beta in betas:
+        print(f"[UMAP alpha-sweep] beta={beta:.2f} ...")
+        res = run_umap_alpha_sweep(beta, file_template,
+                                   alpha_min=alpha_min, alpha_max=alpha_max,
+                                   fss_alpha_c=fss_alpha_c)
+        all_results[beta] = res
+        fss_str = f"{fss_alpha_c:.3f}" if fss_alpha_c is not None else "None"
+        print(
+            f"  km_sig={res['km_sig']:.3f}±{res['km_sig_err']:.4f}  "
+            f"km_deriv={res['km_deriv']:.3f}  FSS_alpha_c={fss_str}"
+        )
+
+    # Save
+    save_dict = {}
+    for beta in betas:
+        r   = all_results[beta]
+        key = f"b{beta:.2f}"
+        save_dict[f"{key}_u_alpha"]        = r["u_alpha"]
+        save_dict[f"{key}_f_cdw_km"]       = r["f_cdw_km"]
+        save_dict[f"{key}_alpha_c"] = np.array([
+            r["km_sig"], r["km_sig_err"], r["km_deriv"], r["best"],
+        ])
+        save_dict[f"{key}_km_deriv_alpha"] = r["km_deriv_curve"][0]
+        save_dict[f"{key}_km_deriv_vals"]  = r["km_deriv_curve"][1]
+        if r["km_sig_popt"] is not None:
+            save_dict[f"{key}_km_sig_popt"] = np.array(r["km_sig_popt"])
+        idx = np.random.default_rng(42).choice(
+            len(r["embedding"]), min(5000, len(r["embedding"])), replace=False
+        )
+        save_dict[f"{key}_emb_x"]      = r["embedding"][idx, 0]
+        save_dict[f"{key}_emb_y"]      = r["embedding"][idx, 1]
+        save_dict[f"{key}_emb_alphas"] = r["alphas"][idx]
+        save_dict[f"{key}_emb_km"]     = r["km_labels"][idx]
+
+    suffix = f"_{tag}" if tag else "_alpha_sweep"
+    fname  = f"umap_results{suffix}.npz"
+    np.savez(f"{results_dir}/{fname}", **save_dict)
+    print(f"\nResults saved to {results_dir}/{fname}")
+    return all_results
+
+
 def main():
     parser = argparse.ArgumentParser(description="UMAP-based beta_c extraction")
+    parser.add_argument("--model", type=str, default=None,
+                        choices=list(_cfg.MODEL_CONFIGS),
+                        help="Named model preset (sets alphas, file-template, FSS). "
+                             "Explicit --alphas / --file-template override the preset.")
     parser.add_argument("--alphas", nargs="+", type=float, default=None,
                         help="Alpha values to process (default: all)")
     parser.add_argument("--beta-min", type=float, default=None,
@@ -230,11 +371,45 @@ def main():
                         help="Use every N-th row (subsample dense datasets)")
     parser.add_argument("--file-template", type=str, default=None,
                         help="Filename template with {alpha:.4f} placeholder")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Directory containing input CSV files")
     parser.add_argument("--tag", type=str, default=None,
                         help="Label appended to output filename (auto-generated if omitted)")
+    parser.add_argument("--alpha-sweep", action="store_true",
+                        help="Alpha-sweep mode: fixed beta, varying alpha. "
+                             "Requires --betas and --file-template (or model preset "
+                             "with ALPHA_SWEEP_FILE_TEMPLATE).")
+    parser.add_argument("--betas", nargs="+", type=float, default=None,
+                        help="Fixed beta value(s) for alpha-sweep mode")
+    parser.add_argument("--fss-alpha-c", type=float, default=None,
+                        help="Expected critical alpha (sigmoid fit initial guess, "
+                             "alpha-sweep mode only)")
     args = parser.parse_args()
-    run_all(alphas=args.alphas, beta_min=args.beta_min, beta_max=args.beta_max,
-            stride=args.stride, file_template=args.file_template, tag=args.tag)
+
+    if args.model is not None:
+        _cfg.apply_model(args.model)
+    if args.data_dir is not None:
+        _cfg.DATA_DIR = args.data_dir
+
+    if args.alpha_sweep:
+        if args.betas is None:
+            parser.error("--alpha-sweep requires --betas")
+        file_template = (args.file_template
+                         or getattr(_cfg, "ALPHA_SWEEP_FILE_TEMPLATE", None))
+        if file_template is None:
+            parser.error("Alpha-sweep mode needs --file-template or "
+                         "ALPHA_SWEEP_FILE_TEMPLATE in model config")
+        run_all_alpha_sweep(
+            betas=args.betas,
+            file_template=file_template,
+            fss_alpha_c=args.fss_alpha_c,
+            tag=args.tag,
+        )
+    else:
+        alphas        = args.alphas        or _cfg.ALPHAS
+        file_template = args.file_template or _cfg.FILE_TEMPLATE
+        run_all(alphas=alphas, beta_min=args.beta_min, beta_max=args.beta_max,
+                stride=args.stride, file_template=file_template, tag=args.tag)
 
 
 if __name__ == "__main__":

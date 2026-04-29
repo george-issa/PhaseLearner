@@ -1,5 +1,10 @@
 """
 Shared configuration: FSS reference values, paths, and physical constants.
+
+Model presets (--model flag)
+-----------------------------
+Call apply_model(name) to switch between model configurations at runtime.
+Available: "ssh"  (oSSH, default), "holstein", "bond_holstein".
 """
 import numpy as np
 import os
@@ -15,7 +20,8 @@ L = 12
 SIZE = L * L  # 144 unit cells; phonon observables have 576 (tau0) or 288 (radial) features
 
 # All alpha values — original 4 + new additions (see RECOMMENDATIONS.txt)
-ALPHAS = [0.235, 0.240, 0.2415, 0.2435, 0.245, 0.250, 0.255]
+# ALPHAS = [0.235, 0.240, 0.2415, 0.2435, 0.245, 0.250, 0.255]
+ALPHAS = [0.240, 0.245, 0.250, 0.255]
 
 # FSS reference values (w=0.5, from sohan_phase_diagram.pdf)
 # New alphas 0.235/0.2415/0.2435: beta_c TBD from FSS once 1000-bin data arrive.
@@ -24,6 +30,123 @@ FSS_BETA_C = np.array([17.5,   14.3,   12.5,   12.3])
 
 # Mapping from alpha to FSS beta_c (NaN returned for alphas without FSS reference)
 FSS_DICT = dict(zip(FSS_ALPHA, FSS_BETA_C))
+
+# ── Model registry ─────────────────────────────────────────────────────────────
+# Named presets for each physical model.  Select via --model on the CLI.
+# FSS_BETA_C = NaN means no finite-size-scaling reference is available yet.
+#
+# Holstein coupling convention: alpha = g (bare e-ph strength).
+#   Dimensionless coupling λ_D = 2g²/(ω₀ W) with ω₀=1, W=8t → λ_D = g²/4.
+#   a0.6325 → λ_D≈0.10,  a0.7071 → λ_D≈0.125,  a0.8165 → λ_D≈0.167,
+#   a1.0000 → λ_D=0.25 (β_c≈6),  a1.4142 → λ_D=0.50 (β_c≈2.5).
+#
+# Bond Holstein: phonons couple to the hopping (bond), not the site energy.
+#   Observable and FSS β_c values are TBD — update FILE_TEMPLATE when
+#   the data CSVs are produced.
+MODEL_CONFIGS = {
+    "ssh": {
+        "ALPHAS":            [0.240, 0.245, 0.250, 0.255],
+        "FSS_ALPHA":         np.array([0.240,  0.245,  0.250,  0.255]),
+        "FSS_BETA_C":        np.array([17.5,   14.3,   12.5,   12.3]),
+        "FILE_TEMPLATE":     "BondBond012345_momentum_L12_w0.5_m0.0_a{alpha:.4f}-1.csv",
+        "L":                 12,
+        "BETA_MIN":          None,
+        "BETA_MAX":          None,
+        "BETA_MIN_PER_ALPHA": {},
+        "BETA_MAX_PER_ALPHA": {},
+    },
+    "holstein": {
+        "ALPHAS":            [0.6325, 0.7071, 0.8165, 1.0000, 1.4142],
+        "FSS_ALPHA":         np.array([0.6325, 0.7071, 0.8165, 1.0000, 1.4142]),
+        "FSS_BETA_C":        np.array([np.nan, np.nan, np.nan,  6.0,    2.5]),
+        "FILE_TEMPLATE":     "electron_densities_w1.00_a{alpha:.4f}_L12-1.csv",
+        "L":                 12,
+        "BETA_MIN":          None,
+        "BETA_MAX":          None,
+        "BETA_MIN_PER_ALPHA": {},
+        "BETA_MAX_PER_ALPHA": {},
+    },
+    "attractive_hubbard": {
+        # 2D square-lattice attractive Hubbard model.
+        # Pipeline convention: ALPHAS holds |U| values (single-precision sweep over U).
+        # First pilot: U=-4, ⟨n⟩=0.875, L=8, β∈[2,14] step 0.5.
+        # Reference T_c at U=-4, n=0.875: T_c≈0.118t  →  β_c≈8.5
+        #   (Paiva, dos Santos, Scalettar, Denteneer 2004; verify against current paper).
+        # Filename uses {alpha:.4f} = |U|. Example: pair_momentum_L8_n0.875_U4.0000-1.csv
+        # Each row: [P(q)_features..., β]. n_features = L² for single-orbital square.
+        "ALPHAS":            [4.0],
+        "FSS_ALPHA":         np.array([4.0]),
+        "FSS_BETA_C":        np.array([8.5]),
+        "FILE_TEMPLATE":     "pair_momentum_L8_n0.875_U{alpha:.4f}-1.csv",
+        "L":                 8,
+        "BETA_MIN":          None,
+        "BETA_MAX":          None,
+        "BETA_MIN_PER_ALPHA": {},
+        "BETA_MAX_PER_ALPHA": {},
+    },
+    "bond_holstein": {
+        # Beta-sweep files (fixed alpha, varying beta) — TBD when CSVs are produced.
+        # Coupling convention: λ_user = α²/2  (x-axis of Fig. 7 is 1/λ_user).
+        # Paper's λ_bond = 2·λ_user, so paper's λ_bond=0.4 ↔ α=0.6325 (λ_user=0.2).
+        # FSS β_c from BondHolstein_paper.pdf Fig. 7 (green DQMC FSS line).
+        # x-axis of Fig. 7 is 1/λ_user where λ_user = α²/2.
+        # Our ALPHAS map to exactly x = 5, 4, 3, 2, 1 on Fig. 7.
+        # Anchor points: (1/λ=5, T=0.63) explicit (p.5); (1/λ=3.333, T=1.0) Fig.7 read.
+        # Values at 1/λ=1,2 are extrapolations — higher uncertainty.
+        #   α=0.6325 → 1/λ=5.0 → T=0.63  → β_c=1.58  (explicit)
+        #   α=0.7071 → 1/λ=4.0 → T≈0.85  → β_c≈1.18  (interpolated)
+        #   α=0.8165 → 1/λ=3.0 → T≈1.07  → β_c≈0.93  (near anchor)
+        #   α=1.0000 → 1/λ=2.0 → T≈1.5   → β_c≈0.67  (extrapolated)
+        #   α=1.4142 → 1/λ=1.0 → T≈2.0   → β_c≈0.50  (left edge of Fig. 7)
+        "ALPHAS":            [0.6325, 0.7071, 0.8165, 1.0000, 1.4142],
+        "FSS_ALPHA":         np.array([0.6325, 0.7071, 0.8165, 1.0000, 1.4142]),
+        "FSS_BETA_C":        np.array([1.58,   1.18,   0.93,   0.67,   0.50]),
+        "FILE_TEMPLATE":     "electron_densities_w1.00_a{alpha:.4f}_L12-1.csv",
+        # Alpha-sweep file (fixed beta, varying alpha): use load_alpha_sweep().
+        # Template uses {beta:.2f} placeholder.
+        # Available: b0.35 → α∈[1.0, 2.5] step 0.1, 1000 samples/α.
+        # At β=0.35 (T=2.86t), expected α_c ≈ 1.5–1.7 from Fig. 7 extrapolation.
+        "ALPHA_SWEEP_FILE_TEMPLATE": "electron_densities_w1.00_b{beta:.2f}_L12-20.csv",
+        "L":                 12,
+        "BETA_MIN":          None,
+        "BETA_MAX":          None,
+        "BETA_MIN_PER_ALPHA": {},
+        "BETA_MAX_PER_ALPHA": {},
+    },
+}
+
+
+def apply_model(name):
+    """
+    Apply a named model preset to this module's global configuration.
+
+    Call this *before* the method modules compute anything (they access
+    config values lazily through the module object).  In run_all.py the
+    call happens before the lazy imports, so every method picks up the
+    updated values automatically.
+
+    Parameters
+    ----------
+    name : str
+        One of "ssh", "holstein", "bond_holstein".
+
+    Returns
+    -------
+    dict  — the applied preset (same object as MODEL_CONFIGS[name]).
+    """
+    import sys
+    if name not in MODEL_CONFIGS:
+        raise ValueError(
+            f"Unknown model '{name}'. Available: {sorted(MODEL_CONFIGS)}"
+        )
+    cfg = MODEL_CONFIGS[name]
+    mod = sys.modules[__name__]
+    for key, val in cfg.items():
+        setattr(mod, key, val)
+    # Rebuild derived attributes
+    mod.SIZE    = mod.L * mod.L
+    mod.FSS_DICT = dict(zip(mod.FSS_ALPHA, mod.FSS_BETA_C))
+    return cfg
 
 # ── Data / observable configuration ───────────────────────────────────────────
 # FILE_TEMPLATE: filename template for beta-sweep data (fixed alpha, varying beta).

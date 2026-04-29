@@ -44,7 +44,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from .config import ALPHAS, FSS_DICT, DEVICE
+from . import config as _cfg
+from .config import DEVICE
 from .data import load_beta_sweep, ensure_results_dir, make_tag, result_filename
 
 
@@ -194,7 +195,7 @@ def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
                                stride=stride, file_template=file_template)
     u_beta = np.unique(betas)
     n_features = X.shape[1]
-    fss_bc = FSS_DICT.get(alpha, float(np.mean(u_beta)))
+    fss_bc = _cfg.FSS_DICT.get(alpha, float(np.mean(u_beta)))
 
     # Global standardization (zero mean, unit variance per feature)
     X_mean = X.mean(axis=0)
@@ -322,7 +323,7 @@ def run_all(alphas=None, latent_dim=2, n_seeds=3, beta_min=None, beta_max=None,
     beta_c array layout: [var_z0_sm, deriv, lat_km_sig, lat_km_deriv, best]
     """
     if alphas is None:
-        alphas = ALPHAS
+        alphas = _cfg.ALPHAS
 
     results_dir = ensure_results_dir()
     all_results = {}
@@ -336,7 +337,7 @@ def run_all(alphas=None, latent_dim=2, n_seeds=3, beta_min=None, beta_max=None,
         )
         all_results[alpha] = res
 
-        fss = FSS_DICT.get(alpha, np.nan)
+        fss = _cfg.FSS_DICT.get(alpha, np.nan)
         print(
             f"  beta_c: var_z0={res['beta_c_var_z0_sm']:.1f}  "
             f"deriv={res['beta_c_deriv']:.1f}  "
@@ -398,6 +399,10 @@ def run_all(alphas=None, latent_dim=2, n_seeds=3, beta_min=None, beta_max=None,
 
 def main():
     parser = argparse.ArgumentParser(description="Autoencoder anomaly detection")
+    parser.add_argument("--model", type=str, default=None,
+                        choices=list(_cfg.MODEL_CONFIGS),
+                        help="Named model preset (sets alphas, file-template, FSS). "
+                             "Explicit --alphas / --file-template override the preset.")
     parser.add_argument("--alphas", nargs="+", type=float, default=None)
     parser.add_argument("--latent-dim", type=int, default=2)
     parser.add_argument("--n-seeds", type=int, default=3)
@@ -409,12 +414,23 @@ def main():
                         help="Use every N-th row (subsample dense datasets)")
     parser.add_argument("--file-template", type=str, default=None,
                         help="Filename template with {alpha:.4f} placeholder")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Directory containing input CSV files")
     parser.add_argument("--tag", type=str, default=None,
                         help="Label appended to output filename (auto-generated if omitted)")
     args = parser.parse_args()
-    run_all(alphas=args.alphas, latent_dim=args.latent_dim, n_seeds=args.n_seeds,
+
+    if args.model is not None:
+        _cfg.apply_model(args.model)
+    if args.data_dir is not None:
+        _cfg.DATA_DIR = args.data_dir
+
+    alphas        = args.alphas        or _cfg.ALPHAS
+    file_template = args.file_template or _cfg.FILE_TEMPLATE
+
+    run_all(alphas=alphas, latent_dim=args.latent_dim, n_seeds=args.n_seeds,
             beta_min=args.beta_min, beta_max=args.beta_max, stride=args.stride,
-            file_template=args.file_template, tag=args.tag)
+            file_template=file_template, tag=args.tag)
 
 
 if __name__ == "__main__":
