@@ -17,11 +17,11 @@ etc.) without code changes — just point FILE_TEMPLATE at the right files.
 """
 import numpy as np
 import os
-from .config import (DATA_DIR, RESULTS_DIR,
-                     FILE_TEMPLATE as DEFAULT_FILE_TEMPLATE,
-                     BETA_MIN as DEFAULT_BETA_MIN,
-                     BETA_MAX as DEFAULT_BETA_MAX,
-                     BETA_MIN_PER_ALPHA, BETA_MAX_PER_ALPHA)
+from . import config as _cfg
+
+# Module attributes are looked up lazily through `_cfg` so that runtime mutations
+# (apply_model() and CLI overrides like --data-dir / --file-template) take effect
+# in callers that imported this module before the override happened.
 
 
 def load_beta_sweep(alpha, data_dir=None, file_template=None,
@@ -58,15 +58,15 @@ def load_beta_sweep(alpha, data_dir=None, file_template=None,
         Inverse temperature for each sample.
     """
     if data_dir is None:
-        data_dir = DATA_DIR
+        data_dir = _cfg.DATA_DIR
     if file_template is None:
-        file_template = DEFAULT_FILE_TEMPLATE
+        file_template = _cfg.FILE_TEMPLATE
 
     # Per-alpha lookup with global fallback
     if beta_min is None:
-        beta_min = BETA_MIN_PER_ALPHA.get(alpha, DEFAULT_BETA_MIN)
+        beta_min = _cfg.BETA_MIN_PER_ALPHA.get(alpha, _cfg.BETA_MIN)
     if beta_max is None:
-        beta_max = BETA_MAX_PER_ALPHA.get(alpha, DEFAULT_BETA_MAX)
+        beta_max = _cfg.BETA_MAX_PER_ALPHA.get(alpha, _cfg.BETA_MAX)
 
     fname = os.path.join(data_dir, file_template.format(alpha=alpha))
     data = np.loadtxt(fname, delimiter=",")
@@ -116,7 +116,7 @@ def load_alpha_sweep(beta, data_dir=None, file_template=None,
         Coupling constant for each sample (last column of the CSV).
     """
     if data_dir is None:
-        data_dir = DATA_DIR
+        data_dir = _cfg.DATA_DIR
     if file_template is None:
         raise ValueError(
             "file_template is required for alpha-sweep data. "
@@ -140,8 +140,14 @@ def load_alpha_sweep(beta, data_dir=None, file_template=None,
 
 def ensure_results_dir():
     """Create results directory if it doesn't exist."""
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    return RESULTS_DIR
+    os.makedirs(_cfg.RESULTS_DIR, exist_ok=True)
+    return _cfg.RESULTS_DIR
+
+
+def ensure_npz_dir():
+    """Create the npz subdir of the results directory if it doesn't exist."""
+    os.makedirs(_cfg.NPZ_DIR, exist_ok=True)
+    return _cfg.NPZ_DIR
 
 
 def make_tag(beta_min=None, file_template=None, tag=None,
@@ -174,7 +180,7 @@ def make_tag(beta_min=None, file_template=None, tag=None,
     parts = []
     # Use the CLI-supplied template if given, otherwise fall back to the
     # config default so the observable name always appears in the tag.
-    effective_template = file_template if file_template is not None else DEFAULT_FILE_TEMPLATE
+    effective_template = file_template if file_template is not None else _cfg.FILE_TEMPLATE
     if effective_template is not None:
         # Extract observable label: everything up to the first "_L", then strip
         # any underscore-separated segments that contain a format placeholder

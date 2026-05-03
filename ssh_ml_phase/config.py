@@ -14,6 +14,7 @@ import torch
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+NPZ_DIR = os.path.join(RESULTS_DIR, "npz")
 
 # ── Physical parameters ───────────────────────────────────────────────────────
 L = 12
@@ -49,6 +50,7 @@ MODEL_CONFIGS = {
         "FSS_ALPHA":         np.array([0.240,  0.245,  0.250,  0.255]),
         "FSS_BETA_C":        np.array([17.5,   14.3,   12.5,   12.3]),
         "FILE_TEMPLATE":     "BondBond012345_momentum_L12_w0.5_m0.0_a{alpha:.4f}-1.csv",
+        "DATA_SUBDIR":       "ssh/csv",   # appended to base data/ on apply_model
         "L":                 12,
         "BETA_MIN":          None,
         "BETA_MAX":          None,
@@ -60,6 +62,7 @@ MODEL_CONFIGS = {
         "FSS_ALPHA":         np.array([0.6325, 0.7071, 0.8165, 1.0000, 1.4142]),
         "FSS_BETA_C":        np.array([np.nan, np.nan, np.nan,  6.0,    2.5]),
         "FILE_TEMPLATE":     "electron_densities_w1.00_a{alpha:.4f}_L12-1.csv",
+        "DATA_SUBDIR":       "holstein/csv",
         "L":                 12,
         "BETA_MIN":          None,
         "BETA_MAX":          None,
@@ -83,6 +86,25 @@ MODEL_CONFIGS = {
         "BETA_MAX":          None,
         "BETA_MIN_PER_ALPHA": {},
         "BETA_MAX_PER_ALPHA": {},
+        # ── Observable registry ──────────────────────────────────────────────
+        # Each Hubbard observable lives in its own subdir under
+        # DATA_DIR/hubbard_square/csv/.  Set OBSERVABLE in run_scripts/* (or
+        # pass observable= to pipeline.run) to one of these names and
+        # DATA_DIR + FILE_TEMPLATE are resolved automatically via
+        # OBSERVABLE_DATA_PATTERN below.  Layout:
+        #   data/hubbard_square/
+        #       sim_data/  ← raw per-β DQMC sim folders
+        #       csv/<obs>_L8_n0.875_U4.0000-1_csv/<obs>_L8_n0.875_U4.0000-1.csv
+        "OBSERVABLES": [
+            "density_position", "density_momentum",
+            "pair_position",    "pair_momentum",
+            "integrated_density_position", "integrated_density_momentum",
+            "integrated_pair_position",    "integrated_pair_momentum",
+        ],
+        "OBSERVABLE_DATA_PATTERN": {
+            "data_subdir":   "hubbard_square/csv/{obs}_L8_n0.875_U4.0000-1_csv",
+            "file_template": "{obs}_L8_n0.875_U{{alpha:.4f}}-1.csv",
+        },
     },
     "bond_holstein": {
         # Beta-sweep files (fixed alpha, varying beta) — TBD when CSVs are produced.
@@ -107,6 +129,7 @@ MODEL_CONFIGS = {
         # Available: b0.35 → α∈[1.0, 2.5] step 0.1, 1000 samples/α.
         # At β=0.35 (T=2.86t), expected α_c ≈ 1.5–1.7 from Fig. 7 extrapolation.
         "ALPHA_SWEEP_FILE_TEMPLATE": "electron_densities_w1.00_b{beta:.2f}_L12-20.csv",
+        "DATA_SUBDIR":       "bond_holstein/csv",
         "L":                 12,
         "BETA_MIN":          None,
         "BETA_MAX":          None,
@@ -146,6 +169,12 @@ def apply_model(name):
     # Rebuild derived attributes
     mod.SIZE    = mod.L * mod.L
     mod.FSS_DICT = dict(zip(mod.FSS_ALPHA, mod.FSS_BETA_C))
+    # Resolve DATA_DIR from preset's DATA_SUBDIR (joined onto base data/);
+    # if the preset has no DATA_SUBDIR, reset to the base data/ directory so
+    # switching models doesn't carry over a previous example's path.
+    base_data = os.path.join(PROJECT_ROOT, "data")
+    sub = cfg.get("DATA_SUBDIR")
+    mod.DATA_DIR = os.path.join(base_data, sub) if sub else base_data
     return cfg
 
 # ── Data / observable configuration ───────────────────────────────────────────
