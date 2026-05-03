@@ -9,6 +9,7 @@ dependencies:
   - matplotlib
   - jupyter
   - pytorch
+  - h5py
   - pip
   - pip:
       - umap-learn

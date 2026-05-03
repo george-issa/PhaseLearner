@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 # ── Source file ───────────────────────────────────────────────────────────────
-SOURCE_FILE = "sims/oSSH_honeycomb_mpi_execute_edited2.jl"
+SOURCE_FILE = "sims/ssh/oSSH_honeycomb_mpi_execute_edited2.jl"
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
 SID       = 5

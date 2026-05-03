@@ -1,7 +1,7 @@
 import numpy as np
 import subprocess
 
-source_file = "sims/oSSH_honeycomb_mpi_execute_edited2.jl"
+source_file = "sims/ssh/oSSH_honeycomb_mpi_execute_edited2.jl"
 
 # ── Parallel walkers ───────────────────────────────────────────────────────────
 # N_WALKERS independent Markov chains run inside each SLURM job via MPI.
