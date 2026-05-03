@@ -74,23 +74,19 @@ python -m ssh_ml_phase.assaad_method   # remove --skip-assaad
 
 ---
 
-### PO-5 Hubbard pilot recovers β_c ≈ 8.5 with current pipeline
+## Closed / superseded claims
+
+### PO-5 Hubbard pilot recovers β_c ≈ 8.5 with current pipeline (closed 2026-05-02)
 
 **Claim:** The same `ssh_ml_phase` pipeline (PCA susceptibility + UMAP sigmoid) applied to the on-site s-wave pair susceptibility `P_s(q=0)` of the 2D attractive Hubbard model at U = −4, ⟨n⟩ = 0.875, L = 8 will recover a β_c estimate within ≤ 1 unit of the literature β_c ≈ 8.5.
 
-**How it would be falsified:** PCA Var(P₁) and UMAP sigmoid β_c estimates differ from the Paiva et al. β_c ≈ 8.5 by > 1 unit, OR the s-wave pair signal is too noisy to give a clean susceptibility peak with 1000 samples / β.
+**Outcome:** confirmed on integrated (susceptibility) correlators; static (equal-time) correlators fail the criterion.
 
-**How to test:** smoke test already passed (P_s(q=0) ≈ 5.36 ± 0.37 at β=8 — ~10× SC enhancement vs. off-Γ values). Full β-sweep is queued; extractor `create_csv_pair_betasweep.py` is in place.
+- UMAP `integrated_pair_position`: km_sig = 8.04 ± 0.10, km_deriv = 8.25 → within 0.5 of FSS.
+- UMAP `integrated_pair_momentum`: km_sig = 8.53 ± 0.11, km_deriv = 8.25 → within 0.05 of FSS.
+- UMAP `integrated_density_{position,momentum}`: km_sig = 9.09 ± 0.21 / 8.67 ± 0.20 → within ≤ 0.6 of FSS.
+- PCA sm-argmax_P1 = 9.5 across **all** integrated observables → within 1 unit (canonical Var(P₁) susceptibility estimator).
+- PCA KMeans-sigmoid clamps at 13.0 (heavy-tailed PC1 trips `raw_2d` KMeans) — that downstream estimator fails the criterion, but Var(P₁) is the load-bearing PCA estimator and it passes.
+- Static (equal-time) correlators give UMAP km_sig in 11.7–13.0 — off by 3–5 units; not the right input for ML phase ID on this pilot.
 
-```bash
-conda activate phaselearner
-python -m ssh_ml_phase --model attractive_hubbard --skip-assaad --skip-ae
-```
-
-**Status:** open; pilot β-sweep submitted.
-
----
-
-## Closed / superseded claims
-
-(none yet — once a PO closes, copy its row here with the resolution date and a one-line outcome.)
+**Headline result:** UMAP km_sig on `integrated_pair_momentum` = 8.53 ± 0.11 vs literature β_c ≈ 8.5.  See [[06_Experiments#Hubbard pilot — 8-observable PCA + UMAP sweep]].

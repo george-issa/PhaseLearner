@@ -58,8 +58,33 @@ Append-only ledger of runs. Each entry: date, command, dataset, observable, outp
 - **Takeaway**: Simulation produces the expected SC signal; β_c ≈ 8 is bracketed. Pilot β-sweep (β ∈ [2, 14] step 0.5) is in `sims/` and queued for full submission. Reference T_c ≈ 0.118 t → β_c ≈ 8.5.
 
 ### Hubbard pilot β-sweep (queued)
-- **Status**: per-β `.jl` and `.log` files visible in `sims/hubbard_square_U4.0000_n0.875_L8_b{β}.00-1.{jl,log}` for β ∈ [2.0, 14.0]. Some `.log` files are present (smoke runs); full-1000-bin sweep queued.
-- **Once complete**: extract via `create_csv_pair_betasweep.py`, then run `python -m ssh_ml_phase --model attractive_hubbard --skip-assaad --skip-ae`. Closes [[04_Claims_and_Proof_Obligations#PO-5 Hubbard pilot recovers β_c ≈ 8.5 with current pipeline]].
+- **Status**: per-β `.jl` and `.log` files visible in `sims/hubbard_square/hubbard_square_U4.0000_n0.875_L8_b{β}.00-1.{jl,log}` for β ∈ [2.0, 14.0]. Some `.log` files are present (smoke runs); full-1000-bin sweep queued.
+- **Once complete**: extract via `create_csv_pair_betasweep.py`, then edit `run_scripts/run_all.py` (`MODEL = "attractive_hubbard"`, `OBSERVABLE = "..."`) and run `python run_scripts/run_all.py`. Closes [[04_Claims_and_Proof_Obligations#PO-5 Hubbard pilot recovers β_c ≈ 8.5 with current pipeline (closed 2026-05-02)]].
+
+### Hubbard pilot — 8-observable PCA + UMAP sweep
+- **Date**: 2026-05-02.
+- **Parameters**: U = −4, ⟨n⟩ = 0.875, L = 8, β ∈ [2, 14] step 0.5, ~400 samples/β (4 walkers × 100 bins).
+- **Observables**: 4 static (`{density,pair} × {position,momentum}`) + 4 integrated susceptibility counterparts (`integrated_*`).
+- **Output**: `results/npz/{pca,umap}_results_<obs>.npz` (8 + 8 files); per-observable PDFs at `results/figures/attractive_hubbard/{pca,umap}/<obs>/{avg_analysis,embedding,PC_layout}.pdf` (PCA) and `embedding.pdf` (UMAP).
+
+**β_c estimates** (FSS reference β_c = 8.5):
+
+| observable                    | PCA km_sig    | PCA sm-argmax_P1 | UMAP km_sig   | UMAP km_deriv |
+|-------------------------------|---------------|------------------|---------------|---------------|
+| density_position              | 11.0 ± 0.83   | 9.5              | 12.50 ± 1.18  | 13.75         |
+| density_momentum              | 13.0 ± 0.51   | 9.5              | 11.97 ± 1.03  | 13.75         |
+| pair_position                 | 13.0 ± 0.51   | 9.5              | 11.73 ± 0.56  |  5.25         |
+| pair_momentum                 | 13.0 ± 0.51   | 9.5              | 13.00 ± 0.60  |  4.75         |
+| integrated_density_position   | (see below)   | 9.5              |  9.09 ± 0.21  |  9.25         |
+| integrated_density_momentum   | (see below)   | 9.5              |  8.67 ± 0.20  |  8.75         |
+| integrated_pair_position      | (see below)   | 9.5              |  8.04 ± 0.10  |  8.25         |
+| integrated_pair_momentum      | 13.0 ± 0.48   | 9.5              |  8.53 ± 0.11  |  8.25         |
+
+PCA km_sig on integrated observables boundary-clamps at the same 13.0 across the board (heavy-tailed PC1 fools `raw_2d` KMeans on every observable here — the prior `spherical`/`arcsinh` recipe work in [[10_PCA_UMAP_Clustering]] is the right path forward for the PCA-cluster estimator).
+
+- **Takeaway 1 — integrated ≫ static.**  UMAP km_sig on the four integrated correlators lands within ~0.5 of FSS β_c = 8.5; static correlators are off by 3–5 units.  PCA Var-based sm-argmax_P1 = 9.5 across **every** observable (same Var(P₁) peak whether the input is static or integrated) — close, but the integrated UMAP path is the tightest.
+- **Takeaway 2 — PCA eigenvalue gap λ1/λ2.**  Pair correlators ≈ 30 (essentially 1-D order-parameter axis); density correlators ≈ 1.5–1.8 (PC2 still carries signal).  Pair → diagnostic-style PC1 loading is interpretable; density → expect more PC2 mixing.
+- Closes [[04_Claims_and_Proof_Obligations#PO-5 Hubbard pilot recovers β_c ≈ 8.5 with current pipeline (closed 2026-05-02)]].
 
 ## Result-file checkpoints (in `results/`)
 
