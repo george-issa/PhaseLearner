@@ -46,7 +46,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from . import config as _cfg
 from .config import DEVICE
-from .data import load_beta_sweep, ensure_results_dir, make_tag, result_filename
+from .data import load_beta_sweep, ensure_npz_dir, make_tag, result_filename
 
 
 def sigmoid_fit(beta, beta_c, w):
@@ -318,14 +318,14 @@ def train_and_evaluate(alpha, latent_dim=2, nepochs=100, batch_size=64,
 def run_all(alphas=None, latent_dim=2, n_seeds=3, beta_min=None, beta_max=None,
             stride=None, file_template=None, tag=None):
     """
-    Run autoencoder analysis for all alphas. Saves to results/autoencoder_results.npz.
+    Run autoencoder analysis for all alphas. Saves to results/npz/autoencoder_results.npz.
 
     beta_c array layout: [var_z0_sm, deriv, lat_km_sig, lat_km_deriv, best]
     """
     if alphas is None:
         alphas = _cfg.ALPHAS
 
-    results_dir = ensure_results_dir()
+    results_dir = ensure_npz_dir()
     all_results = {}
 
     for alpha in alphas:

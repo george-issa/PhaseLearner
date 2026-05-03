@@ -25,6 +25,53 @@ structure better than t-SNE. The idea for phase detection:
    extract beta_c as the midpoint of the transition.  The peak of the
    point-wise derivative df_KVBS/dbeta provides a second estimate.
 
+Note: why we z-score the embedding before KMeans (`scale_kmeans=True`)
+----------------------------------------------------------------------
+KMeans minimises the within-cluster sum of squared Euclidean distances::
+
+    inertia = Σ_k Σ_{i ∈ C_k} ||x_i - c_k||^2
+            = Σ_k Σ_{i ∈ C_k} Σ_j (x_ij - c_kj)^2
+
+Axis `j` contributes ~ N · V_j to the sum, where V_j is the variance along
+that axis.  When the two UMAP coordinates have unequal spread, KMeans is
+biased toward splitting along the wider axis even if the actual cluster
+separation lies in another direction.
+
+`StandardScaler().fit_transform(X)` computes per-column mean μ_j and std σ_j
+and replaces each entry with x'_ij = (x_ij − μ_j) / σ_j, so every axis ends
+up with mean 0 and std 1.  Each axis then contributes equally to KMeans's
+distance metric, and the cluster boundary follows the genuine direction of
+separation in the embedding.
+
+Concretely on the attractive-Hubbard pilot (`L=8, U=−4, n=0.875`):
+
+    observable                       (σ_x, σ_y)    ratio   effect of scaling
+    integrated_pair_position         (~4.7, ~4.8)  0.98    near-isotropic; result barely changes
+    integrated_pair_momentum         (~4.0, ~5.4)  0.74    pre-scale: KMeans biased toward emb_y,
+                                                            f_KVBS non-monotonic (0 → 0.84 → 0.61);
+                                                            post-scale: monotonic, lands at FSS β_c=8.5
+
+What z-scoring does *not* do (important):
+  * It does not remove outliers — a 20σ outlier stays 20σ in standardised
+    space.  This is exactly why standardising raw PCA scores misbehaves on
+    heavy-tailed observables: PC2's outlier tails become the dominant
+    feature in the standardised plane and KMeans grabs *them* as a cluster.
+  * It does not reshape distributions.  Heavy tails stay heavy, bimodal
+    columns stay bimodal.
+  * It is not a row-wise normalisation: it operates per column, not per
+    sample, and does not put rows on a unit sphere.
+  * Z-scoring before UMAP would change the embedding (UMAP's neighbour
+    graph depends on the input metric).  We z-score *after* UMAP — the
+    embedding itself is identical, only KMeans's per-axis weighting changes.
+
+UMAP coords are roughly compact, bounded, and Gaussian-shaped (UMAP fits a
+fuzzy neighbourhood graph and pulls outliers into the bulk rather than
+projecting them to ±20σ), so per-column mean and std are meaningful and
+z-scoring is appropriate.  PCA on heavy-tailed input data inherits the
+heavy tails linearly, μ and σ are no longer summary statistics of "where
+the typical data sits", and z-scoring of PCA scores is *not* recommended —
+hence why this option lives in `umap_method.py` only.
+
 Usage
 -----
     python3.11 -m ssh_ml_phase.umap_method                                              # run all alphas
@@ -38,6 +85,7 @@ import numpy as np
 from scipy.optimize import curve_fit
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 try:
     import umap # type: ignore
@@ -46,7 +94,7 @@ except ImportError:
     HAS_UMAP = False
 
 from . import config as _cfg
-from .data import load_beta_sweep, load_alpha_sweep, ensure_results_dir, make_tag, result_filename
+from .data import load_beta_sweep, load_alpha_sweep, ensure_npz_dir, make_tag, result_filename
 
 
 def sigmoid_fit(beta, beta_c, w):
@@ -63,7 +111,7 @@ def sigmoid_deriv(beta, beta_c, w):
 
 def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
                       beta_min=None, beta_max=None, stride=None,
-                      file_template=None):
+                      file_template=None, scale_kmeans=True):
     """
     Run UMAP + KMeans clustering for a single alpha value.
 
@@ -72,6 +120,16 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
         2. UMAP to 2D.
         3. KMeans(k=2) on the 2D embedding.
         4. Sigmoid fit to f_KVBS(beta) and point-wise derivative.
+
+    Parameters
+    ----------
+    scale_kmeans : bool, default True
+        If True, z-score (StandardScaler) the 2D embedding before KMeans so
+        the two axes contribute equally to Euclidean distance.  Recommended
+        because skewed embeddings (e.g. integrated_pair_momentum at ~0.74:1)
+        otherwise bias KMeans toward splitting along the wider axis.  Set
+        False to cluster on the raw embedding (useful for diagnostic
+        comparisons).
 
     Returns
     -------
@@ -109,8 +167,11 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
     embedding = reducer.fit_transform(X_pca)
 
     # ── KMeans clustering ──────────────────────────────────────────────────
+    # Optionally z-score the 2D embedding so each axis contributes equally
+    # to Euclidean distance — see the `scale_kmeans` doc above.
+    km_input = StandardScaler().fit_transform(embedding) if scale_kmeans else embedding
     km = KMeans(n_clusters=2, random_state=42, n_init=10)
-    km_labels = km.fit_predict(embedding)
+    km_labels = km.fit_predict(km_input)
 
     # Identify which cluster is KVBS (ordered phase = higher avg beta)
     mean_beta_0 = np.mean(betas[km_labels == 0])
@@ -157,11 +218,14 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
 
 
 def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
-            file_template=None, tag=None):
+            file_template=None, tag=None, scale_kmeans=True):
     """
-    Run UMAP analysis for all alphas. Saves to results/umap_results.npz.
+    Run UMAP analysis for all alphas. Saves to results/npz/umap_results.npz.
 
     beta_c array layout: [km_sig, km_sig_err, km_deriv, best]
+
+    `scale_kmeans` (default True) toggles z-scoring of the 2D embedding
+    before KMeans — see :func:`run_umap_analysis`.
     """
     if not HAS_UMAP:
         print("ERROR: umap-learn not installed. Run: pip install umap-learn")
@@ -170,13 +234,14 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
     if alphas is None:
         alphas = _cfg.ALPHAS
 
-    results_dir = ensure_results_dir()
+    results_dir = ensure_npz_dir()
     all_results = {}
 
     for alpha in alphas:
         print(f"[UMAP] alpha={alpha:.3f} ...")
         res = run_umap_analysis(alpha, beta_min=beta_min, beta_max=beta_max,
-                                stride=stride, file_template=file_template)
+                                stride=stride, file_template=file_template,
+                                scale_kmeans=scale_kmeans)
         all_results[alpha] = res
 
         fss = _cfg.FSS_DICT.get(alpha, np.nan)
@@ -222,7 +287,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
 
 def run_umap_alpha_sweep(beta, file_template, n_neighbors=30, min_dist=0.3,
                          pca_dims=50, alpha_min=None, alpha_max=None,
-                         fss_alpha_c=None):
+                         fss_alpha_c=None, scale_kmeans=True):
     """
     Run UMAP + KMeans on alpha-sweep data (fixed beta, varying alpha).
 
@@ -254,8 +319,11 @@ def run_umap_alpha_sweep(beta, file_template, n_neighbors=30, min_dist=0.3,
     embedding = reducer.fit_transform(X_pca)
 
     # ── KMeans: high alpha = CDW (ordered) phase ──────────────────────────────
+    # Optional z-scoring of the 2D embedding before clustering — see the
+    # beta-sweep variant for the rationale.
+    km_input = StandardScaler().fit_transform(embedding) if scale_kmeans else embedding
     km = KMeans(n_clusters=2, random_state=42, n_init=10)
-    km_labels = km.fit_predict(embedding)
+    km_labels = km.fit_predict(km_input)
 
     mean_alpha_0 = np.mean(alphas[km_labels == 0])
     mean_alpha_1 = np.mean(alphas[km_labels == 1])
@@ -300,25 +368,29 @@ def run_umap_alpha_sweep(beta, file_template, n_neighbors=30, min_dist=0.3,
 
 
 def run_all_alpha_sweep(betas, file_template, alpha_min=None, alpha_max=None,
-                        fss_alpha_c=None, tag=None):
+                        fss_alpha_c=None, tag=None, scale_kmeans=True):
     """
     Run UMAP alpha-sweep analysis for one or more fixed-beta files.
-    Saves to results/umap_results_alpha_sweep[_tag].npz.
+    Saves to results/npz/umap_results_alpha_sweep[_tag].npz.
 
     alpha_c array layout per beta key: [km_sig, km_sig_err, km_deriv, best]
+
+    `scale_kmeans` (default True) toggles z-scoring of the 2D embedding
+    before KMeans — see :func:`run_umap_analysis`.
     """
     if not HAS_UMAP:
         print("ERROR: umap-learn not installed. Run: pip install umap-learn")
         return {}
 
-    results_dir = ensure_results_dir()
+    results_dir = ensure_npz_dir()
     all_results = {}
 
     for beta in betas:
         print(f"[UMAP alpha-sweep] beta={beta:.2f} ...")
         res = run_umap_alpha_sweep(beta, file_template,
                                    alpha_min=alpha_min, alpha_max=alpha_max,
-                                   fss_alpha_c=fss_alpha_c)
+                                   fss_alpha_c=fss_alpha_c,
+                                   scale_kmeans=scale_kmeans)
         all_results[beta] = res
         fss_str = f"{fss_alpha_c:.3f}" if fss_alpha_c is not None else "None"
         print(

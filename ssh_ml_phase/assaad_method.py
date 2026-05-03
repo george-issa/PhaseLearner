@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from . import config as _cfg
 from .config import DEVICE
-from .data import load_beta_sweep, ensure_results_dir, result_filename
+from .data import load_beta_sweep, ensure_npz_dir, result_filename
 
 
 class CNN_GI(nn.Module):
@@ -164,14 +164,14 @@ def run_all(alphas=None, nskip_values=None, tag=None,
             beta_min=None, beta_max=None, stride=None, file_template=None):
     """
     Run Assaad method for all alphas and nskip values.
-    Saves to results/assaad_results.npz.
+    Saves to results/npz/assaad_results.npz.
     """
     if alphas is None:
         alphas = _cfg.ALPHAS
     if nskip_values is None:
         nskip_values = [4, 6, 8]
 
-    results_dir = ensure_results_dir()
+    results_dir = ensure_npz_dir()
     all_results = {}
 
     for alpha in alphas:
