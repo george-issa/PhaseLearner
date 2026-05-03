@@ -31,8 +31,46 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 
+
+# ── Clustering recipes for the post-PCA step ─────────────────────────────────
+# The PCA itself is always linear (no rescaling, no log).  These recipes only
+# choose how KMeans interprets the PC scores for cluster assignment.
+#
+#   "raw_2d"     — KMeans(k=2) on raw (P1, P2).  Default; correct when both PCs
+#                  have well-behaved (≈ Gaussian, comparable variance)
+#                  distributions.  Fails on heavy-tailed observables (e.g. SC
+#                  susceptibility) because KMeans is dominated by PC1's tail.
+#   "spherical"  — L2-normalise each (P1, P2) → KMeans on the unit circle.
+#                  Drops magnitude entirely; clusters by direction (angle).
+#                  The right choice when |P| has a long tail but
+#                  arg(P1, P2) is stable across the transition.
+#   "arcsinh"    — 1-D KMeans on arcsinh(P1).  arcsinh is a smooth signed log:
+#                  linear near 0, ~ ln(2|x|) in the tails.  Linearises an
+#                  exponential PC1 ramp so the centroid-pair midpoint sits
+#                  near β_c instead of in the tail.
+
+VALID_PCA_CLUSTER_METHODS = ("raw_2d", "spherical", "arcsinh")
+
+
+def _cluster_pca_scores(P, method="raw_2d"):
+    """Return KMeans(k=2) cluster labels for the given PC scores under the
+    requested clustering recipe (see module-level table)."""
+    km = KMeans(n_clusters=2, random_state=42, n_init=10)
+    if method == "raw_2d":
+        return km.fit_predict(P[:, :2])
+    if method == "spherical":
+        norms = np.linalg.norm(P[:, :2], axis=1, keepdims=True)
+        norms = np.where(norms < 1e-12, 1e-12, norms)
+        return km.fit_predict(P[:, :2] / norms)
+    if method == "arcsinh":
+        return km.fit_predict(np.arcsinh(P[:, :1]))
+    raise ValueError(
+        f"unknown PCA cluster_method {method!r}; "
+        f"valid: {VALID_PCA_CLUSTER_METHODS}"
+    )
+
 from . import config as _cfg
-from .data import load_beta_sweep, load_alpha_sweep, ensure_results_dir, make_tag, result_filename
+from .data import load_beta_sweep, load_alpha_sweep, ensure_npz_dir, make_tag, result_filename
 
 
 # ── Fit functions ─────────────────────────────────────────────────────────────
@@ -89,6 +127,7 @@ def run_pca(alpha, n_components=10, beta_min=None, beta_max=None,
         'betas'           — beta label for every sample
         'u_beta'          — sorted unique beta values
         'mean_P1'         — <P1>(beta)  signed mean (order-parameter view)
+        'mean_P2'         — <P2>(beta)  signed mean
         'mean_abs_P1'     — <|P1|>(beta)
         'mean_abs_P1_sm'  — Gaussian-smoothed <|P1|> (sigma=2)
         'var_P1'          — Var(P1)(beta) [susceptibility — peaks near beta_c]
@@ -97,6 +136,7 @@ def run_pca(alpha, n_components=10, beta_min=None, beta_max=None,
         'var_P2'          — Var(P2)(beta)
         'var_P2_sm'       — Gaussian-smoothed Var(P2)
         'explained_var'   — PCA explained variance ratios
+        'pc1_loading'     — PCA component vector for PC1, shape (n_features,)
     """
     X, betas = load_beta_sweep(alpha, beta_min=beta_min, beta_max=beta_max,
                                stride=stride, file_template=file_template)
@@ -107,6 +147,7 @@ def run_pca(alpha, n_components=10, beta_min=None, beta_max=None,
 
     u_beta      = np.unique(betas)
     mean_P1     = np.array([np.mean(P[betas == b, 0])         for b in u_beta])
+    mean_P2     = np.array([np.mean(P[betas == b, 1])         for b in u_beta])
     mean_abs_P1 = np.array([np.mean(np.abs(P[betas == b, 0])) for b in u_beta])
     var_P1      = np.array([np.var(P[betas == b, 0])           for b in u_beta])
     mean_abs_P2 = np.array([np.mean(np.abs(P[betas == b, 1])) for b in u_beta])
@@ -119,6 +160,7 @@ def run_pca(alpha, n_components=10, beta_min=None, beta_max=None,
         "betas":           betas,
         "u_beta":          u_beta,
         "mean_P1":         mean_P1,
+        "mean_P2":         mean_P2,
         "mean_abs_P1":     mean_abs_P1,
         "mean_abs_P1_sm":  mean_abs_P1_sm,
         "var_P1":          var_P1,
@@ -127,13 +169,14 @@ def run_pca(alpha, n_components=10, beta_min=None, beta_max=None,
         "var_P2":          var_P2,
         "var_P2_sm":       gaussian_filter1d(var_P2, sigma=2),
         "explained_var":   pca.explained_variance_ratio_,
+        "pc1_loading":     pca.components_[0],
     }
 
 
 # ── Beta_c extraction ─────────────────────────────────────────────────────────
 
 def extract_beta_c(alpha, pca_result=None, beta_min=None, beta_max=None,
-                   stride=None, file_template=None):
+                   stride=None, file_template=None, cluster_method="raw_2d"):
     """
     Extract beta_c using PCA susceptibility and clustering methods.
 
@@ -208,9 +251,10 @@ def extract_beta_c(alpha, pca_result=None, beta_min=None, beta_max=None,
     d_mean_abs_P1  = np.diff(mean_abs_P1_sm) / np.diff(u_beta)
     bc_mean_P1_deriv = float(beta_mid[np.argmax(d_mean_abs_P1)])
 
-    # ── KMeans clustering on 2D PCA space ────────────────────────────────────
-    km = KMeans(n_clusters=2, random_state=42, n_init=10)
-    km_labels = km.fit_predict(P[:, :2])
+    # ── KMeans clustering on PC scores (recipe selectable) ───────────────────
+    # PCA itself is always linear; this step chooses how KMeans interprets
+    # the (P1, P2) cloud.  See `_cluster_pca_scores` for the recipe table.
+    km_labels = _cluster_pca_scores(P, method=cluster_method)
 
     # Cluster with higher mean beta = ordered (KVBS) phase
     mean_beta_0 = np.mean(betas_all[km_labels == 0])
@@ -238,6 +282,25 @@ def extract_beta_c(alpha, pca_result=None, beta_min=None, beta_max=None,
     d_fkm       = np.diff(f_kvbs_km) / np.diff(u_beta)
     bc_km_deriv = float(beta_mid[np.argmax(d_fkm)])
 
+    # ── P1 / P2 z-scored mean crossings ───────────────────────────────────────
+    # Each PC's per-β mean is divided by its global std (≈ √λ_k); the
+    # difference's sign-changes are linearly interpolated to give β values
+    # where the two PCs carry equal signed signal in σ-units.
+    s1 = float(P[:, 0].std())
+    s2 = float(P[:, 1].std())
+    m1z = pca_result["mean_P1"] / s1 if s1 > 0 else pca_result["mean_P1"]
+    m2z = pca_result["mean_P2"] / s2 if s2 > 0 else pca_result["mean_P2"]
+    diff = m1z - m2z
+    sign_changes = np.where(np.diff(np.sign(diff)))[0]
+    crossings = []
+    for i in sign_changes:
+        b0, b1 = u_beta[i], u_beta[i + 1]
+        d0, d1 = diff[i], diff[i + 1]
+        if d1 == d0:
+            continue
+        crossings.append(float(b0 - d0 * (b1 - b0) / (d1 - d0)))
+    crossings_P1P2 = np.array(crossings, dtype=float)
+
     return {
         "argmax_P1":          bc_argmax_P1,
         "argmax_P2":          bc_argmax_P2,
@@ -255,29 +318,34 @@ def extract_beta_c(alpha, pca_result=None, beta_min=None, beta_max=None,
         "km_labels":          km_labels,
         "f_kvbs_km":          f_kvbs_km,
         "km_sig_popt":        popt_km,
+        "crossings_P1P2":     crossings_P1P2,
         "pca_result":         pca_result,
     }
 
 
 def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
-            file_template=None, tag=None):
+            file_template=None, tag=None, cluster_method="raw_2d"):
     """
-    Run PCA analysis for all alphas. Saves results to results/pca_results.npz.
+    Run PCA analysis for all alphas. Saves results to results/npz/pca_results.npz.
 
     beta_c array layout:
         [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best,
          mean_P1_deriv_bc]
+
+    `cluster_method` selects how the PC scores are clustered after PCA;
+    see :data:`VALID_PCA_CLUSTER_METHODS` and :func:`_cluster_pca_scores`.
     """
     if alphas is None:
         alphas = _cfg.ALPHAS
 
-    results_dir = ensure_results_dir()
+    results_dir = ensure_npz_dir()
     all_results = {}
 
     for i, alpha in enumerate(alphas):
-        print(f"[PCA] alpha={alpha:.3f} ...")
+        print(f"[PCA] alpha={alpha:.3f}  cluster_method={cluster_method} ...")
         res = extract_beta_c(alpha, beta_min=beta_min, beta_max=beta_max,
-                             stride=stride, file_template=file_template)
+                             stride=stride, file_template=file_template,
+                             cluster_method=cluster_method)
         all_results[alpha] = res
 
         fss = _cfg.FSS_DICT.get(alpha, np.nan)
@@ -296,6 +364,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
         key = f"a{alpha:.4f}"
         save_dict[f"{key}_u_beta"]           = pr["u_beta"]
         save_dict[f"{key}_mean_P1"]          = pr["mean_P1"]
+        save_dict[f"{key}_mean_P2"]          = pr["mean_P2"]
         save_dict[f"{key}_mean_abs_P1"]      = pr["mean_abs_P1"]
         save_dict[f"{key}_mean_abs_P1_sm"]   = pr["mean_abs_P1_sm"]
         save_dict[f"{key}_var_P1"]           = pr["var_P1"]
@@ -304,6 +373,8 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
         save_dict[f"{key}_var_P2"]           = pr["var_P2"]
         save_dict[f"{key}_var_P2_sm"]        = pr["var_P2_sm"]
         save_dict[f"{key}_explained_var"]    = pr["explained_var"]
+        save_dict[f"{key}_pc1_loading"]      = pr["pc1_loading"]
+        save_dict[f"{key}_crossings_P1P2"]   = r["crossings_P1P2"]
         # beta_c: [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best,
         #          mean_P1_deriv_bc]
         save_dict[f"{key}_beta_c"] = np.array([
@@ -396,7 +467,8 @@ def run_pca_alpha_sweep(beta, file_template, n_components=10,
 
 
 def extract_alpha_c(beta, file_template, pca_result=None,
-                    alpha_min=None, alpha_max=None, fss_alpha_c=None):
+                    alpha_min=None, alpha_max=None, fss_alpha_c=None,
+                    cluster_method="raw_2d"):
     """
     Extract critical alpha using PCA susceptibility and KMeans on alpha-sweep data.
 
@@ -443,8 +515,8 @@ def extract_alpha_c(beta, file_template, pca_result=None,
     ac_mean_P1_deriv = float(alpha_mid[np.argmax(d_mean_abs)])
 
     # ── KMeans: high alpha = CDW (ordered) phase ─────────────────────────────
-    km = KMeans(n_clusters=2, random_state=42, n_init=10)
-    km_labels = km.fit_predict(P[:, :2])
+    # PCA itself stays linear; clustering recipe selectable via cluster_method.
+    km_labels = _cluster_pca_scores(P, method=cluster_method)
 
     mean_alpha_0 = np.mean(alphas_all[km_labels == 0])
     mean_alpha_1 = np.mean(alphas_all[km_labels == 1])
@@ -493,23 +565,24 @@ def extract_alpha_c(beta, file_template, pca_result=None,
 
 
 def run_all_alpha_sweep(betas, file_template, alpha_min=None, alpha_max=None,
-                        fss_alpha_c=None, tag=None):
+                        fss_alpha_c=None, tag=None, cluster_method="raw_2d"):
     """
     Run PCA alpha-sweep analysis for one or more fixed-beta files.
-    Saves results to results/pca_results_alpha_sweep[_tag].npz.
+    Saves results to results/npz/pca_results_alpha_sweep[_tag].npz.
 
-    alpha_c array layout per beta key:
-        [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best,
-         mean_P1_deriv_ac]
+    `cluster_method` selects the post-PCA clustering recipe; see
+    :func:`_cluster_pca_scores`.
     """
-    results_dir = ensure_results_dir()
+    results_dir = ensure_npz_dir()
     all_results = {}
 
     for beta in betas:
-        print(f"[PCA alpha-sweep] beta={beta:.2f} ...")
+        print(f"[PCA alpha-sweep] beta={beta:.2f}  "
+              f"cluster_method={cluster_method} ...")
         res = extract_alpha_c(beta, file_template,
                               alpha_min=alpha_min, alpha_max=alpha_max,
-                              fss_alpha_c=fss_alpha_c)
+                              fss_alpha_c=fss_alpha_c,
+                              cluster_method=cluster_method)
         all_results[beta] = res
         fss_str = f"{fss_alpha_c:.3f}" if fss_alpha_c is not None else "None"
         print(
