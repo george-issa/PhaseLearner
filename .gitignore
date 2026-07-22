@@ -24,3 +24,4 @@ run_SSH_edited.py
 *.gz
 *.tex
 %*
+results/lbc_ising_check/work/
