@@ -75,11 +75,17 @@ def _decode_phonon_row(row, L=12):
 
 
 def _decode_radial_row(row, L=12):
-    """Decode one radial-displacement row (288 values) → rA, rB each (L,L)."""
+    """
+    Decode one radial-displacement row (288 values) → rA, rB each (L,L).
+
+    The flat row interleaves sublattices per unit cell: [A0, B0, A1, B1, ...]
+    (column-major (2, N) reshape in the Julia writer — its block-layout
+    comment is wrong; see extract_phonons_edited.py for the verification).
+    """
     N = L * L
     return {
-        "rA": row[:N].reshape(L, L, order='F'),
-        "rB": row[N:2*N].reshape(L, L, order='F'),
+        "rA": row[0:2*N:2].reshape(L, L, order='F'),
+        "rB": row[1:2*N:2].reshape(L, L, order='F'),
     }
 
 

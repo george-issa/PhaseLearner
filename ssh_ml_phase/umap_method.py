@@ -94,7 +94,8 @@ except ImportError:
     HAS_UMAP = False
 
 from . import config as _cfg
-from .data import load_beta_sweep, load_alpha_sweep, ensure_npz_dir, make_tag, result_filename
+from .data import (load_beta_sweep, load_alpha_sweep, ensure_npz_dir, make_tag,
+                   result_filename, lattice_snapshots, store_snapshots)
 
 
 def sigmoid_fit(beta, beta_c, w):
@@ -170,7 +171,7 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
     # Optionally z-score the 2D embedding so each axis contributes equally
     # to Euclidean distance — see the `scale_kmeans` doc above.
     km_input = StandardScaler().fit_transform(embedding) if scale_kmeans else embedding
-    km = KMeans(n_clusters=2, random_state=42, n_init=10)
+    km = KMeans(n_clusters=2, random_state=42, n_init=100)
     km_labels = km.fit_predict(km_input)
 
     # Identify which cluster is KVBS (ordered phase = higher avg beta)
@@ -202,6 +203,8 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
     d_fkm       = np.diff(f_kvbs_km) / np.diff(u_beta)
     bc_km_deriv = float(beta_mid[np.argmax(d_fkm)])
 
+    inlat_betas, inlat_grids = lattice_snapshots(X, betas)
+
     return {
         "embedding":      embedding,
         "betas":          betas,
@@ -214,6 +217,8 @@ def run_umap_analysis(alpha, n_neighbors=30, min_dist=0.3, pca_dims=50,
         "best":           bc_km,
         "km_sig_popt":    popt_km,
         "km_deriv_curve": (beta_mid, d_fkm),
+        "inlat_betas":    inlat_betas,
+        "inlat_grids":    inlat_grids,
     }
 
 
@@ -274,6 +279,7 @@ def run_all(alphas=None, beta_min=None, beta_max=None, stride=None,
         save_dict[f"{key}_emb_y"]     = r["embedding"][idx, 1]
         save_dict[f"{key}_emb_betas"] = r["betas"][idx]
         save_dict[f"{key}_emb_km"]    = r["km_labels"][idx]
+        store_snapshots(save_dict, key, r)
 
     fname = result_filename("umap", make_tag(beta_min, file_template, tag,
                                             beta_max=beta_max, stride=stride))

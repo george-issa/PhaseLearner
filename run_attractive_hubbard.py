@@ -15,6 +15,7 @@ Pipeline convention:
   - Folder produced by the driver:
       hubbard_square_U-{|U|:.4f}_n{n:.3f}_L{L}_b{β:.2f}-{sID}
 """
+import argparse
 import numpy as np
 import subprocess
 import shutil
@@ -27,7 +28,7 @@ LOCAL = True             # True = Dell Tower (mpirun direct); False = SLURM clus
 # Concurrency cap for LOCAL mode: how many (|U|, β) points to run at once.
 # Each job uses N_WALKERS cores → cap × N_WALKERS ≲ physical cores on the box.
 # Default 1 keeps the box responsive; bump to 2–4 once you've timed one point.
-LOCAL_PARALLEL = 4
+LOCAL_PARALLEL = 8
 
 # MPI launcher.  Set to None to auto-detect: prefer Julia's `mpiexecjl`
 # (works with the JLL-bundled MPI, no system install needed), then `mpirun`.
@@ -44,22 +45,18 @@ source_file = os.path.join(SIMULATIONS_DIR, "attractive_hubbard_square_mpi_execu
 
 # ── Parallel walkers ───────────────────────────────────────────────────────────
 # 4 MPI walkers × 100 bins/walker = 400 samples per (|U|, β) point.
-N_WALKERS         = 4
+N_WALKERS         = 2
 N_BINS_TOTAL      = 400
-N_BINS_PER_WALKER = N_BINS_TOTAL // N_WALKERS   # 100
+N_BINS_PER_WALKER = N_BINS_TOTAL // N_WALKERS   # 200
 
 # ── Per-|U| beta grids ─────────────────────────────────────────────────────────
-# Pilot: U=-4, ⟨n⟩=0.875.  Literature T_c≈0.118 t  →  β_c≈8.5.
-# Sweep brackets β_c on both sides with Δβ=0.5; 25 points total.
-BETA_GRIDS = {
-    4.0: np.linspace(2.0, 14.0, 25),
-}
-
-# All |U| values (in submission order)
-ABS_US = list(BETA_GRIDS.keys())
+# β grid: 25 points β∈[2,14] step 0.5.  Pilot bracket is for U=-4
+# (Literature T_c≈0.118 t → β_c≈8.5); widen manually for other |U|.
+# |U| is set via --abs-u on the command line; default 4.0.
 
 # ── Physical/algorithmic parameters ────────────────────────────────────────────
-N_TARGET = 0.875        # target filling
+ABS_U    = 6.0          # |U|/t (CLI --abs-u overrides this)
+N_TARGET = 0.875        # target filling (CLI --n overrides this)
 MU_INIT  = 0.0          # initial chemical potential — MuTuner will adjust
 L        = 8            # lattice (8×8 for pilot; rerun L=10, 12 for FSS later)
 
@@ -150,12 +147,28 @@ def _resolve_launcher():
     sys.exit("ERROR: no MPI launcher found (need mpiexecjl or mpirun on PATH)")
 
 
+def _point_already_done(absU, n, L, beta, sID, n_walkers, min_size_bytes=1_000_000):
+    """Return True if all n_walkers bins_pID-*.h5 files exist and exceed min_size."""
+    sim_dir = os.path.join(
+        DATA_DIR, f"hubbard_square_U-{absU:.4f}_n{n:.3f}_L{L}_b{beta:.2f}-{sID}"
+    )
+    for pID in range(n_walkers):
+        h5 = os.path.join(sim_dir, "bins", f"bins_pID-{pID}.h5")
+        if not (os.path.isfile(h5) and os.path.getsize(h5) >= min_size_bytes):
+            return False
+    return True
+
+
 def run_local(sID, absU, n, mu, L, beta, N_therm, N_measurements,
               N_bins, N_updates, n_walkers=1):
     """Run a single (|U|, β) point directly via mpiexecjl/mpirun (no SLURM)."""
     job_name  = f"hubbard_square_U{absU:.4f}_n{n:.3f}_L{L}_b{beta:.2f}-{sID}"
     jl_script = os.path.join(SIMULATIONS_DIR, f"{job_name}.jl")
     log_file  = os.path.join(SIMULATIONS_DIR, f"{job_name}.log")
+
+    if _point_already_done(absU, n, L, beta, sID, n_walkers):
+        print(f"[SKIP]  |U|={absU:.4f}  β={beta:.2f}  (HDF5 already populated)")
+        return 0
 
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(SIMULATIONS_DIR, exist_ok=True)
@@ -182,6 +195,22 @@ def run_local(sID, absU, n, mu, L, beta, N_therm, N_measurements,
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Submit / run the 2D attractive Hubbard β-sweep.",
+    )
+    parser.add_argument(
+        "--abs-u", type=float, default=ABS_U,
+        help=f"|U|/t for the run (Julia driver flips the sign). Default: {ABS_U}",
+    )
+    parser.add_argument(
+        "--n", type=float, default=N_TARGET,
+        help=f"Target filling ⟨n⟩. Default: {N_TARGET}",
+    )
+    args = parser.parse_args()
+
+    BETA_GRIDS = {args.abs_u: np.linspace(2.0, 14.0, 25)}
+    ABS_US = list(BETA_GRIDS.keys())
+
     sID = 1
 
     # Sampling parameters.  Hubbard local_updates! does one full HS-field sweep
@@ -216,13 +245,13 @@ def main():
             f"{b_array[0]:.2f} → {b_array[-1]:.2f})"
         )
         for beta in b_array:
-            generate_jl_script(sID, absU, N_TARGET, MU_INIT, L, beta,
+            generate_jl_script(sID, absU, args.n, MU_INIT, L, beta,
                                N_therm, N_measurements, N_bins, N_updates)
             job_list.append((absU, beta))
 
     if not LOCAL:
         for absU, beta in job_list:
-            generate_slurm_script(sID, absU, N_TARGET, MU_INIT, L, beta,
+            generate_slurm_script(sID, absU, args.n, MU_INIT, L, beta,
                                   N_therm, N_measurements, N_bins, N_updates,
                                   n_walkers=N_WALKERS)
         return
@@ -230,14 +259,14 @@ def main():
     # ── LOCAL execution ────────────────────────────────────────────────────
     if LOCAL_PARALLEL <= 1:
         for absU, beta in job_list:
-            run_local(sID, absU, N_TARGET, MU_INIT, L, beta,
+            run_local(sID, absU, args.n, MU_INIT, L, beta,
                       N_therm, N_measurements, N_bins, N_updates,
                       n_walkers=N_WALKERS)
     else:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=LOCAL_PARALLEL) as ex:
             futures = [
-                ex.submit(run_local, sID, absU, N_TARGET, MU_INIT, L, beta,
+                ex.submit(run_local, sID, absU, args.n, MU_INIT, L, beta,
                           N_therm, N_measurements, N_bins, N_updates,
                           N_WALKERS)
                 for absU, beta in job_list

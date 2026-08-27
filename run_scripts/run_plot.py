@@ -19,6 +19,9 @@ BETA_MIN   = None        # must match what was passed when computing the .npz
 BETA_MAX   = None
 STRIDE     = None
 TAG        = None        # output label; None → auto-derived from FILE_TEMPLATE
+N_TARGET   = None        # override preset's ⟨n⟩ (e.g. 0.5); None → use preset default
+SID        = None        # output-folder ID → results/<SID>/{npz,figures}; must
+                         # match the SID the .npz were computed under (None → results/)
 
 # Methods whose .npz to plot. Drop "umap" if you only ran PCA, etc.
 METHODS    = ["pca", "umap"]
@@ -35,4 +38,6 @@ run(
     tag          = TAG,
     methods      = METHODS,
     plot_only    = True,
+    n_target     = N_TARGET,
+    sid          = SID,
 )

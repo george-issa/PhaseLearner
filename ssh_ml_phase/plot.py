@@ -25,12 +25,14 @@ Usage (standalone):
 """
 import argparse
 import os
+import re
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import TwoSlopeNorm
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers the 3d projection)
 from scipy.stats import gaussian_kde
 
 plt.rcParams.update({
@@ -75,7 +77,9 @@ RESULTS_DIR_OVERRIDE = None                # None → use default results/ direc
 
 
 # ── Style constants (match notebook conventions) ──────────────────────────────
-_CM_BETA    = "coolwarm"   # continuous parameter (β or α) colormap
+_CM_BETA    = "viridis"    # continuous parameter (β or α) colormap —
+                           # sequential (no white midpoint) so every point
+                           # stays visible against the white background
 _CM_CLUSTER = "Set1"       # KMeans cluster labels
 _C_VAR1     = "#e41a1c"    # Var(P1) / primary estimate — red
 _C_VAR2     = "#377eb8"    # Var(P2) / secondary        — blue
@@ -104,11 +108,20 @@ def _figures_dir(tag, method, model, results_dir=None):
     ``"clustering_comparison"``, ``"correlations"``, …).  ``model`` falls
     back to ``"unspecified"``; ``tag`` is appended when non-empty so a
     bare model+method root holds aggregate plots.
+
+    Tags ending in ``_nX.XXX`` (Hubbard-style filling suffix) are split so
+    the filling becomes a parent directory:
+        ``pair_momentum_n0.500`` → ``n0.500/pair_momentum``
+    This keeps a single ⟨n⟩ value's plots together.
     """
     base = results_dir or _cfg.RESULTS_DIR
     parts = [base, "figures", model or "unspecified", method]
     if tag:
-        parts.append(tag)
+        m = re.search(r"_(n\d+\.\d+)$", tag)
+        if m:
+            parts.extend([m.group(1), tag[:m.start()]])
+        else:
+            parts.append(tag)
     path = os.path.join(*parts)
     os.makedirs(path, exist_ok=True)
     return path
@@ -265,14 +278,27 @@ def _panel_f_deriv(ax, d_x, d_vals, popt, xlabel=r"$\beta$"):
 # Ported from plot_pca_diagnostics.py; β_c reference is the FSS value (not
 # hard-coded) and skipped when NaN.
 
-def _betac_vline(ax, betac):
-    """Vertical dotted line at FSS β_c plus a small label, no-op if NaN/None."""
+# Module-level: optional uncertainty band per FSS β_c value.  Populated
+# at the start of plot_{pca,umap}_beta_sweep loops; consulted by
+# _betac_vline so we don't have to plumb the band through every panel.
+_BETAC_BANDS: dict = {}
+
+
+def _betac_vline(ax, betac, *, lw=1.0, label=True):
+    """Vertical dotted line at FSS β_c (+ shaded band if registered in
+    `_BETAC_BANDS`) plus an optional small label.  No-op if betac is
+    NaN or None."""
     if betac is None or not np.isfinite(betac):
         return
-    ax.axvline(betac, color="gray", ls=":", lw=1.0)
-    ax.text(betac, 0.98, rf"\ $\beta_c\!\approx\!{betac:.2f}$",
-            color="gray", fontsize=8, va="top", ha="left",
-            transform=ax.get_xaxis_transform())
+    band = _BETAC_BANDS.get(float(betac))
+    if band is not None:
+        lo, hi = band
+        ax.axvspan(lo, hi, color="gray", alpha=0.15, ec="none")
+    ax.axvline(betac, color="gray", ls=":", lw=lw)
+    if label:
+        ax.text(betac, 0.98, rf"\ $\beta_c\!\approx\!{betac:.2f}$",
+                color="gray", fontsize=8, va="top", ha="left",
+                transform=ax.get_xaxis_transform())
 
 
 def _diag_panel_pc_vs_beta(ax, betas, P_samples, u_beta, betac, ylabel, title):
@@ -331,8 +357,7 @@ def _diag_panel_pc_vs_beta(ax, betas, P_samples, u_beta, betac, ylabel, title):
 
     inset = ax.inset_axes([ix, iy, inset_w, inset_h])
     inset.plot(u_beta, means, "o-", color=_D_P1, lw=1.4, ms=3)
-    if betac is not None and np.isfinite(betac):
-        inset.axvline(betac, color="gray", ls=":", lw=0.8)
+    _betac_vline(inset, betac, lw=0.8, label=False)
     inset.set_title(r"$\langle\cdot\rangle_\beta$ only",
                     fontsize=7, pad=2)
     inset.tick_params(labelsize=6, length=2)
@@ -432,17 +457,19 @@ def _diag_panel_pc_var_overlay(ax, var_P1, var_P2, P1_samples, P2_samples,
 def _diag_panel_p1p2_scatter(ax, P1, P2, betas, betac,
                              xlabel=r"$P_1$", ylabel=r"$P_2$",
                              title=r"$(P_1, P_2)$ coloured by $\beta$"):
-    """2D embedding scatter coloured by β with a diverging colormap centred
-    at β_c.  Falls back to coolwarm when β_c is unavailable.
+    """2D embedding scatter coloured by β with a sequential colormap centred
+    at β_c (β_c maps to the middle of the colormap via TwoSlopeNorm).  Uses
+    viridis — no white/near-white region — so points near β_c stay visible
+    against the white background.  Falls back to a plain linear norm when β_c
+    is unavailable.
     Generic over PCA scores and UMAP coordinates via the xlabel/ylabel hooks.
     """
+    cmap = "viridis"
     if betac is not None and np.isfinite(betac):
         norm = TwoSlopeNorm(vcenter=float(betac),
                             vmin=float(betas.min()), vmax=float(betas.max()))
-        cmap = "RdBu"
     else:
         norm = None
-        cmap = "coolwarm"
     sc = ax.scatter(P1, P2, c=betas, cmap=cmap, norm=norm,
                     s=5, alpha=0.7, rasterized=True)
     cb = plt.colorbar(sc, ax=ax, pad=0.02, fraction=0.046)
@@ -556,20 +583,31 @@ def _diag_panel_f_deriv(ax, d_beta, d_vals, popt, betac, ylabel,
                  fontsize=11)
 
 
-def _diag_panel_pc1_loading(ax, loading, L, is_q, label):
-    """PC1 loading — L×L imshow on the lattice or BZ when len(loading)=L²;
+def _diag_panel_pc_loading(ax, loading, L, is_q, label, pc_index=1):
+    """PC{k} loading — L×L imshow on the lattice or BZ when len(loading)=L²
+    (or L²−1, i.e. the origin/self-term column was excluded by a transform);
     otherwise a feature-index bar plot of |loading|."""
     if loading is None or len(loading) == 0:
         ax.set_visible(False)
         return
+    pc_lab = f"PC{pc_index}"
+    grid = None
     if len(loading) == L * L:
-        v = loading.reshape(L, L)
-        if v.flat[np.argmax(np.abs(v))] < 0:
+        grid = np.asarray(loading, float)
+    elif len(loading) == L * L - 1:            # origin (index 0) was excluded
+        grid = np.full(L * L, np.nan)
+        grid[1:] = loading
+    if grid is not None:
+        v = grid.reshape(L, L)
+        finite = v[np.isfinite(v)]
+        if finite[np.argmax(np.abs(finite))] < 0:   # sign: largest cell positive
             v = -v
-        amax = float(np.max(np.abs(v)))
-        im = ax.imshow(v, origin="upper", cmap="RdBu_r",
+        amax = float(np.nanmax(np.abs(v)))
+        cmap = plt.get_cmap("RdBu_r").copy()
+        cmap.set_bad("0.85")                          # excluded origin → gray
+        im = ax.imshow(np.ma.masked_invalid(v), origin="upper", cmap=cmap,
                        vmin=-amax, vmax=amax, interpolation="nearest")
-        plt.colorbar(im, ax=ax, pad=0.02).set_label(r"PC1 loading")
+        plt.colorbar(im, ax=ax, pad=0.02).set_label(rf"{pc_lab} loading")
         ax.set_xticks([0, L // 2, L - 1])
         ax.set_yticks([0, L // 2, L - 1])
         if is_q:
@@ -580,7 +618,7 @@ def _diag_panel_pc1_loading(ax, loading, L, is_q, label):
         else:
             ax.set_xlabel(r"$i_y$")
             ax.set_ylabel(r"$i_x$")
-        ax.set_title(f"{label} --- PC1 loading on the "
+        ax.set_title(f"{label} --- {pc_lab} loading on the "
                      + ("Brillouin zone" if is_q else "lattice"),
                      fontsize=10)
     else:
@@ -590,11 +628,15 @@ def _diag_panel_pc1_loading(ax, loading, L, is_q, label):
         ax.bar(np.arange(len(v)), v, color=_D_SCATTER, width=1.0)
         ax.axhline(0, color="black", lw=0.6, alpha=0.5)
         ax.set_xlabel(r"feature index $i$")
-        ax.set_ylabel(r"PC1 loading $w_i$")
-        ax.set_title(f"{label} --- PC1 loading vs feature index "
+        ax.set_ylabel(rf"{pc_lab} loading $w_i$")
+        ax.set_title(f"{label} --- {pc_lab} loading vs feature index "
                      rf"($n_{{\mathrm{{feat}}}}={len(v)}$)",
                      fontsize=10)
         ax.grid(alpha=0.3, axis="y")
+
+
+# Backwards-compat alias (older callers still expect _diag_panel_pc1_loading)
+_diag_panel_pc1_loading = _diag_panel_pc_loading
 
 
 def _diag_panel_p1_ridgeline(ax, P1_sample, betas_sample, u_beta, betac, label):
@@ -661,6 +703,206 @@ def _diag_panel_spectrum(ax, ev, title):
                     xy=(2, ev[1]), xytext=(3.5, ev[1] * 4),
                     fontsize=9, color=_D_P2,
                     arrowprops=dict(arrowstyle="-", color=_D_P2, lw=0.6))
+
+
+# ── Prediction-based panels (Dawid 2022 §3.4.3, Fig. 3.7 c,d) ─────────────────
+
+def _diag_panel_pred_vs_beta(ax, betas_sample, pred_sample, u_beta,
+                             mean_pred, std_pred, betac, title):
+    """Per-sample (β_true, β_pred) scatter + per-β mean ± std band + identity
+    line.  Mirrors :func:`_diag_panel_pc_vs_beta` but with β_pred on the y-axis,
+    plus an explicit y = x reference so saturation inside each phase is visible.
+    """
+    ax.scatter(betas_sample, pred_sample, s=2, alpha=0.15, color=_D_SCATTER,
+               rasterized=True, label=r"per-sample $\beta_{\mathrm{pred}}$")
+    ax.plot(u_beta, mean_pred, "o-", color=_D_P1, lw=1.6, ms=4,
+            label=r"$\langle\beta_{\mathrm{pred}}\rangle_\beta\ \pm\ \mathrm{std}$")
+    ax.fill_between(u_beta, mean_pred - std_pred, mean_pred + std_pred,
+                    alpha=0.25, color=_D_P1)
+    bmin, bmax = float(u_beta[0]), float(u_beta[-1])
+    ax.plot([bmin, bmax], [bmin, bmax], "--", lw=0.9, color="black", alpha=0.55,
+            label=r"$\beta_{\mathrm{pred}}=\beta$")
+    _betac_vline(ax, betac)
+    ax.set_xlabel(r"$\beta_{\mathrm{true}}$")
+    ax.set_ylabel(r"$\beta_{\mathrm{pred}}$")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+
+
+def _diag_panel_pred_curve(ax, u_beta, mean_pred, betac, title):
+    """Fig. 3.7(c) — ⟨β_pred⟩_β vs β_true with identity line.
+
+    For a system with no transition the curve is linear; a transition shows up
+    as a sigmoidal flattening on either side and a steep central rise.
+    """
+    bmin, bmax = float(u_beta[0]), float(u_beta[-1])
+    ax.plot([bmin, bmax], [bmin, bmax], "--", lw=0.9, color="black", alpha=0.55,
+            label=r"$\beta_{\mathrm{pred}}=\beta$")
+    ax.plot(u_beta, mean_pred, "o-", color=_D_P1, lw=1.6, ms=5,
+            label=r"$\langle\beta_{\mathrm{pred}}\rangle_\beta$")
+    _betac_vline(ax, betac)
+    ax.set_xlabel(r"$\beta_{\mathrm{true}}$")
+    ax.set_ylabel(r"$\langle\beta_{\mathrm{pred}}\rangle_\beta$")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+
+
+def _diag_panel_pred_deriv(ax, deriv_beta, deriv_vals, bc_deriv, betac, title):
+    """Fig. 3.7(d) — d⟨β_pred⟩/dβ_true (raw) with the argmax peak marked.
+
+    A constant slope = 1 means the NN tracks β perfectly; a peak flags the
+    critical point.  β_c is the raw argmax of |d⟨β_pred⟩/dβ|.
+    """
+    ax.axhline(1.0, color="black", lw=0.8, ls="--", alpha=0.55,
+               label=r"slope $= 1$ (identity)")
+    ax.axhline(0.0, color="black", lw=0.4, alpha=0.3)
+    ax.plot(deriv_beta, deriv_vals, "o-", color=_D_P1, lw=1.6, ms=4,
+            label=r"$d\langle\beta_{\mathrm{pred}}\rangle/d\beta$")
+
+    # Mark the argmax peak in yellow
+    idx     = int(np.argmax(np.abs(deriv_vals)))
+    peak_b  = float(deriv_beta[idx])
+    peak_v  = float(deriv_vals[idx])
+    ax.plot(peak_b, peak_v, "o", ms=11, mfc="yellow", mec="black", zorder=5)
+    ax.axvline(peak_b, color=_D_P1, ls="--", lw=1.4, alpha=0.85,
+               label=rf"$\beta_c^{{\mathrm{{argmax}}}}={bc_deriv:.2f}$")
+    _betac_vline(ax, betac)
+
+    ax.set_xlabel(r"$\beta_{\mathrm{true}}$")
+    ax.set_ylabel(r"$d\langle\beta_{\mathrm{pred}}\rangle/d\beta_{\mathrm{true}}$")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+
+
+_C_SEEDS = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd",
+            "#ff7f0e", "#17becf", "#8c564b", "#e377c2"]
+
+
+def _diag_panel_loss_curves(ax, train_curves, val_curves, best_epochs, *,
+                            log_y=True, zoom=False, title="",
+                            lr_curves=None):
+    """Per-seed train (solid) + val (dashed) loss vs epoch.
+
+    `train_curves`, `val_curves` are (n_seeds, max_epochs) NaN-padded.
+    `best_epochs[s]` is annotated with a yellow marker at the best val.
+    When `lr_curves` is given, the median LR schedule is overlaid on a
+    secondary y-axis (right side) so plateau-then-drop episodes are visible.
+    Units: MSE on z-scored β labels.
+    """
+    n_seeds = train_curves.shape[0]
+    plotted = False
+    for s in range(n_seeds):
+        c = _C_SEEDS[s % len(_C_SEEDS)]
+        tr = train_curves[s]
+        va = val_curves[s]
+        mask = ~np.isnan(tr)
+        epochs = np.arange(len(tr))[mask]
+        if not epochs.size:
+            continue
+        ax.plot(epochs, tr[mask], "-",  color=c, lw=1.4, alpha=0.9,
+                label=f"seed {s} train")
+        ax.plot(epochs, va[mask], "--", color=c, lw=1.4, alpha=0.9,
+                label=f"seed {s} val")
+        be = int(best_epochs[s])
+        if 0 <= be < len(tr) and not np.isnan(tr[be]):
+            ax.plot(be, va[be], "o", ms=7, mfc="yellow", mec=c, zorder=5)
+        plotted = True
+
+    if log_y:
+        ax.set_yscale("log")
+    if zoom and plotted:
+        last_epoch = max(np.sum(~np.isnan(train_curves[s]))
+                         for s in range(n_seeds))
+        ax.set_xlim(int(last_epoch * 0.4), last_epoch)
+
+    ax.axhline(1.0, color="black", lw=0.8, ls=":", alpha=0.5,
+               label=r"$\mathrm{Var}(\beta)$ in $z$-units")
+    ax.set_xlabel(r"epoch")
+    ax.set_ylabel(r"MSE  ($z$-scored $\beta$)")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(loc="best", fontsize=7, framealpha=0.9, ncol=2)
+
+    # ── LR overlay (median across seeds) ─────────────────────────────────
+    if lr_curves is not None and np.isfinite(lr_curves).any():
+        ax2 = ax.twinx()
+        with np.errstate(invalid="ignore"):
+            lr_med = np.nanmedian(lr_curves, axis=0)
+        valid = np.isfinite(lr_med)
+        if valid.any():
+            epochs_all = np.arange(len(lr_med))
+            ax2.plot(epochs_all[valid], lr_med[valid],
+                     ":", color="gray", lw=1.2, alpha=0.85)
+            ax2.set_yscale("log")
+            ax2.set_ylabel(r"learning rate (median)", color="gray", fontsize=9)
+            ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
+            ax2.grid(False)
+
+
+def _diag_panel_seed_losses(ax, best_train, best_val, title):
+    """Per-seed final-best train + val MSE as a grouped bar chart.
+
+    R² on validation = 1 − val/Var(β_z) = 1 − val (since Var of z-scored labels
+    is 1 by construction).  Printed inline above each val bar.
+    """
+    n_seeds = len(best_val)
+    x       = np.arange(n_seeds)
+    w       = 0.4
+    ax.bar(x - w/2, best_train, width=w, color="#1f77b4", label="train (best epoch)")
+    ax.bar(x + w/2, best_val,   width=w, color="#d62728", label="val (best)")
+    for i, v in enumerate(best_val):
+        r2 = 1.0 - v
+        ax.text(x[i] + w/2, v, rf" $R^2={r2:.2f}$",
+                ha="center", va="bottom", fontsize=8, color="#d62728")
+    ax.axhline(np.median(best_val), color="#d62728", ls=":", lw=1.0,
+               alpha=0.6, label=rf"median val = {np.median(best_val):.3f}")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"seed {s}" for s in range(n_seeds)])
+    ax.set_ylabel(r"MSE  ($z$-scored $\beta$)")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3, axis="y")
+    ax.legend(loc="best", fontsize=8)
+
+
+def _diag_panel_seed_epochs(ax, best_epochs, n_epochs_run, title):
+    """Per-seed best epoch (val argmin) vs total epochs trained.  Shows
+    whether early-stop is firing well-after the best epoch (long tail of
+    patience) or whether we'd benefit from more epochs."""
+    n_seeds = len(best_epochs)
+    x       = np.arange(n_seeds)
+    w       = 0.4
+    ax.bar(x - w/2, best_epochs,  width=w, color="#2ca02c", label="best epoch")
+    ax.bar(x + w/2, n_epochs_run, width=w, color="#888888", label="total epochs")
+    for i in range(n_seeds):
+        gap = int(n_epochs_run[i]) - int(best_epochs[i])
+        ax.text(x[i], n_epochs_run[i], f"+{gap}",
+                ha="center", va="bottom", fontsize=8, color="#444444")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"seed {s}" for s in range(n_seeds)])
+    ax.set_ylabel(r"epoch")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3, axis="y")
+    ax.legend(loc="best", fontsize=8)
+
+
+def _diag_panel_pred_residual(ax, u_beta, mean_pred, std_pred, betac, title):
+    """Residual ⟨β_pred⟩_β − β plotted against β.  In a textbook case this is
+    flat-negative inside the disordered phase, crosses zero near β_c, and is
+    flat-positive inside the ordered phase — the saturation that Fig. 3.7(c)
+    only hints at."""
+    residual = mean_pred - u_beta
+    ax.plot(u_beta, residual, "o-", color=_D_P1, lw=1.5, ms=4)
+    ax.fill_between(u_beta, residual - std_pred, residual + std_pred,
+                    alpha=0.25, color=_D_P1)
+    ax.axhline(0.0, color="black", lw=0.9, ls="--", alpha=0.6)
+    _betac_vline(ax, betac)
+    ax.set_xlabel(r"$\beta_{\mathrm{true}}$")
+    ax.set_ylabel(r"$\langle\beta_{\mathrm{pred}}\rangle_\beta - \beta$")
+    ax.set_title(title, fontsize=10)
+    ax.grid(alpha=0.3)
 
 
 # ── PCA — beta sweep ──────────────────────────────────────────────────────────
@@ -750,7 +992,55 @@ def _legacy_pca_pages(pdf_var, pdf_km, alpha, key, data, info, model_info,
     plt.close(fig)
 
 
-def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
+def _style_3d(ax):
+    """Common axis labels + viewing angle for the (P1,P2,P3) score cloud."""
+    ax.set_xlabel(r"$P_1$"); ax.set_ylabel(r"$P_2$"); ax.set_zlabel(r"$P_3$")
+    ax.view_init(elev=22, azim=-60)
+
+
+def _diag_embed3d(P1, P2, P3, betas, km_labels, betac, obs_label,
+                  alpha, betac_str):
+    """3D scatter of the (P1,P2,P3) PCA score cloud, shown twice: coloured by
+    KMeans cluster (what the clustering produced) and by β (the physical
+    parameter).  This is the embedding the clustering actually runs in when
+    ``PCA_CLUSTER_DIMS >= 3``, so it shows directly how the split sits in space.
+    """
+    fig = plt.figure(figsize=(16, 7))
+
+    # Left: coloured by KMeans cluster (ordered = higher-mean-β = blue, to match
+    # the 2D cluster panel in embedding.pdf).
+    ax0 = fig.add_subplot(1, 2, 1, projection="3d")
+    if km_labels is not None:
+        km = km_labels.astype(int)
+        if (km == 0).any() and (km == 1).any():
+            ordered = 0 if betas[km == 0].mean() > betas[km == 1].mean() else 1
+        else:
+            ordered = 1
+        for lab, color, name in ((ordered, _D_SCATTER, "ordered"),
+                                 (1 - ordered, _D_P1, "disordered")):
+            m = km == lab
+            ax0.scatter(P1[m], P2[m], P3[m], s=4, alpha=0.5, c=color,
+                        label=name, depthshade=False, rasterized=True)
+        ax0.legend(loc="upper left", fontsize=9)
+    ax0.set_title("coloured by KMeans cluster", fontsize=11)
+    _style_3d(ax0)
+
+    # Right: coloured by β (same sequential colormap as the 2D panels).
+    ax1 = fig.add_subplot(1, 2, 2, projection="3d")
+    sc = ax1.scatter(P1, P2, P3, c=betas, cmap=_CM_BETA, s=4, alpha=0.5,
+                     depthshade=False, rasterized=True)
+    fig.colorbar(sc, ax=ax1, pad=0.1, fraction=0.03).set_label(r"$\beta$")
+    ax1.set_title(r"coloured by $\beta$", fontsize=11)
+    _style_3d(ax1)
+
+    fig.suptitle(rf"{obs_label} --- 3D PCA embedding $(P_1,P_2,P_3)$  $|$  "
+                 rf"$\alpha={alpha:.4f}$  $\beta_c(\mathrm{{FSS}})={betac_str}$",
+                 fontsize=13)
+    return fig
+
+
+def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir,
+                        fss_band_dict=None):
     """
     Three multi-page PDFs (one page per alpha) for PCA beta-sweep results:
       avg_analysis.pdf  — 4×1 column: P1 vs β, P2 vs β, ⟨Pk⟩/σk overlay
@@ -778,6 +1068,20 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
     out_emb = os.path.join(fig_dir, "embedding.pdf")
     out_pc  = os.path.join(fig_dir, "PC_layout.pdf")
 
+    # 3D embedding (P1,P2,P3) — only when the npz carries the 3rd-PC sample
+    # (older results predate it).  Opened/closed outside the `with` so an
+    # absent P3 never leaves an empty PDF behind.
+    has_p3    = any(f"a{a:.4f}_P3_sample" in data.files for a in alphas)
+    out_emb3d = os.path.join(fig_dir, "embedding_3d.pdf")
+    pdf_emb3d = PdfPages(out_emb3d) if has_p3 else None
+
+    _BETAC_BANDS.clear()
+    if fss_band_dict:
+        for a in alphas:
+            fss_a = float(fss_dict.get(a, np.nan))
+            if not np.isnan(fss_a) and a in fss_band_dict:
+                _BETAC_BANDS[float(fss_a)] = fss_band_dict[a]
+
     legacy_pdfs = []
     if LEGACY_VAR_KM_PDFS:
         out_var = os.path.join(fig_dir, "pca_susceptibility.pdf")
@@ -800,12 +1104,14 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
                 continue
             P1_s    = _safe(data, f"{key}_P1_sample")
             P2_s    = _safe(data, f"{key}_P2_sample")
+            P3_s    = _safe(data, f"{key}_P3_sample")
             b_s     = _safe(data, f"{key}_betas_sample")
             km_s    = _safe(data, f"{key}_km_labels_sample")
             var_P1  = _safe(data, f"{key}_var_P1")
             var_P2  = _safe(data, f"{key}_var_P2")
             ev      = _safe(data, f"{key}_explained_var")
-            loading = _safe(data, f"{key}_pc1_loading")
+            loading   = _safe(data, f"{key}_pc1_loading")
+            loading_2 = _safe(data, f"{key}_pc2_loading")
             f_kv    = _safe(data, f"{key}_f_kvbs_km")
             popt    = _safe(data, f"{key}_km_sig_popt")
             d_kb    = _safe(data, f"{key}_km_deriv_beta")
@@ -838,11 +1144,11 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
             pdf_avg.savefig(fig, dpi=120)
             plt.close(fig)
 
-            # ── embedding.pdf  (2×2 layout) ───────────────────────────────
-            fig, axes = plt.subplots(2, 2, figsize=(14, 11),
+            # ── embedding.pdf  (2×3 layout) ───────────────────────────────
+            fig, axes = plt.subplots(2, 3, figsize=(20, 11),
                                      constrained_layout=True)
 
-            # Top row: embedding space, two views of the same data
+            # Col 0+1, top row: embedding space, two views of the same data
             _diag_panel_p1p2_scatter(axes[0, 0], P1_s, P2_s, b_s, betac)
             if km_s is not None:
                 _diag_panel_p1p2_clusters(axes[0, 1], P1_s, P2_s, km_s, b_s)
@@ -853,7 +1159,7 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
             else:
                 axes[0, 1].set_visible(False)
 
-            # Bottom row: cluster fraction and its sharpness, vs β
+            # Col 0+1, bottom row: cluster fraction and its sharpness, vs β
             ord_lab = _ordered_label(model_info.get("model"))
             if f_kv is not None:
                 _diag_panel_f_sigmoid(axes[1, 0], u_beta, f_kv, popt,
@@ -867,6 +1173,12 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
             else:
                 axes[1, 1].set_visible(False)
 
+            # Col 2: PC1 + PC2 loadings on the lattice / BZ.
+            _diag_panel_pc_loading(axes[0, 2], loading,   L, is_q,
+                                   obs_label, pc_index=1)
+            _diag_panel_pc_loading(axes[1, 2], loading_2, L, is_q,
+                                   obs_label, pc_index=2)
+
             fig.suptitle(
                 rf"{obs_label} --- PCA embedding  $|$  "
                 rf"$\alpha={alpha:.4f}$  "
@@ -874,6 +1186,13 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
                 fontsize=13)
             pdf_emb.savefig(fig, dpi=120)
             plt.close(fig)
+
+            # ── embedding_3d.pdf  (P1,P2,P3 by cluster and by β) ──────────
+            if pdf_emb3d is not None and P3_s is not None:
+                fig3d = _diag_embed3d(P1_s, P2_s, P3_s, b_s, km_s, betac,
+                                      obs_label, alpha, betac_str)
+                pdf_emb3d.savefig(fig3d, dpi=120)
+                plt.close(fig3d)
 
             # ── PC_layout.pdf  (3 stacked rows) ───────────────────────────
             fig, axes = plt.subplots(3, 1, figsize=(8, 16))
@@ -898,9 +1217,13 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
 
     for pdf, _ in legacy_pdfs:
         pdf.close()
+    if pdf_emb3d is not None:
+        pdf_emb3d.close()
 
     print(f"  Saved: {out_avg}")
     print(f"  Saved: {out_emb}")
+    if pdf_emb3d is not None:
+        print(f"  Saved: {out_emb3d}")
     print(f"  Saved: {out_pc}")
     for _, p in legacy_pdfs:
         print(f"  Saved: {p}")
@@ -909,17 +1232,27 @@ def plot_pca_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
 
 # ── UMAP — beta sweep ─────────────────────────────────────────────────────────
 
-def plot_umap_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
+def plot_umap_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir,
+                         fss_band_dict=None, method_label="UMAP"):
     """
-    Multi-page PDF for UMAP beta-sweep: ``embedding.pdf`` — same 2×2
-    diagnostic-style layout as the PCA embedding.
-    Run tag is encoded by ``fig_dir`` (`<model>/umap/<tag>/`).
+    Multi-page PDF for a 2D-embedding beta-sweep: ``embedding.pdf`` — same
+    2×2 diagnostic-style layout as the PCA embedding.  Used for both UMAP
+    and t-SNE (they share the npz key layout); ``method_label`` sets the
+    axis / title text.
+    Run tag is encoded by ``fig_dir`` (`<model>/<method>/<tag>/`).
     """
     if not os.path.exists(npz_path):
         print(f"  [UMAP plot] Not found: {npz_path}"); return
     data      = np.load(npz_path, allow_pickle=False)
     obs_label = (model_info.get("observable") or "").replace("_", r"\_")
     out       = os.path.join(fig_dir, "embedding.pdf")
+
+    _BETAC_BANDS.clear()
+    if fss_band_dict:
+        for a in alphas:
+            fss_a = float(fss_dict.get(a, np.nan))
+            if not np.isnan(fss_a) and a in fss_band_dict:
+                _BETAC_BANDS[float(fss_a)] = fss_band_dict[a]
 
     with PdfPages(out) as pdf:
         for alpha in alphas:
@@ -950,13 +1283,13 @@ def plot_umap_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
             # Top row: embedding by β / by cluster
             _diag_panel_p1p2_scatter(
                 axes[0, 0], emb_x, emb_y, emb_b, betac,
-                xlabel=r"UMAP$_1$", ylabel=r"UMAP$_2$",
-                title=r"UMAP --- coloured by $\beta$")
+                xlabel=rf"{method_label}$_1$", ylabel=rf"{method_label}$_2$",
+                title=rf"{method_label} --- coloured by $\beta$")
             if emb_km is not None:
                 _diag_panel_p1p2_clusters(
                     axes[0, 1], emb_x, emb_y, emb_km, emb_b,
-                    xlabel=r"UMAP$_1$", ylabel=r"UMAP$_2$",
-                    title=r"UMAP --- coloured by cluster")
+                    xlabel=rf"{method_label}$_1$", ylabel=rf"{method_label}$_2$",
+                    title=rf"{method_label} --- coloured by cluster")
                 axes[0, 1].set_xlim(axes[0, 0].get_xlim())
                 axes[0, 1].set_ylim(axes[0, 0].get_ylim())
             else:
@@ -974,7 +1307,7 @@ def plot_umap_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
                 axes[1, 1].set_visible(False)
 
             fig.suptitle(
-                rf"{obs_label} --- UMAP embedding  $|$  "
+                rf"{obs_label} --- {method_label} embedding  $|$  "
                 rf"$\alpha={alpha:.4f}$  "
                 rf"$\beta_c(\mathrm{{FSS}})={betac_str}$",
                 fontsize=13)
@@ -982,6 +1315,552 @@ def plot_umap_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir):
             plt.close(fig)
 
     print(f"  Saved: {out}")
+    return out
+
+
+# ── Prediction-based — beta sweep ─────────────────────────────────────────────
+
+def plot_prediction_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir,
+                               fss_band_dict=None):
+    """Two PDFs (one page per alpha) for prediction-based β_c results.
+
+    ``avg_analysis.pdf`` — 4×1 column matching the PCA layout:
+      1. (β_true, β_pred) per-sample scatter + per-β mean ± std + identity
+      2. ⟨β_pred⟩_β raw + smoothed vs β_true (Fig. 3.7c of Dawid 2022)
+      3. d⟨β_pred⟩/dβ raw + smoothed with peaks marked (Fig. 3.7d)
+      4. Residual ⟨β_pred⟩ − β (saturation diagnostic)
+
+    ``derivative.pdf`` — single panel reproducing only Fig. 3.7(d) for the
+    quick-look comparison against the FSS band / other methods.
+    """
+    if not os.path.exists(npz_path):
+        print(f"  [Prediction plot] Not found: {npz_path}"); return
+    data      = np.load(npz_path, allow_pickle=False)
+    obs_label = (model_info.get("observable") or "").replace("_", r"\_")
+
+    out_avg   = os.path.join(fig_dir, "avg_analysis.pdf")
+    out_deriv = os.path.join(fig_dir, "derivative.pdf")
+    out_conv  = os.path.join(fig_dir, "convergence.pdf")
+    has_conv  = any(f"a{a:.4f}_train_curves" in data.files for a in alphas)
+
+    _BETAC_BANDS.clear()
+    if fss_band_dict:
+        for a in alphas:
+            fss_a = float(fss_dict.get(a, np.nan))
+            if not np.isnan(fss_a) and a in fss_band_dict:
+                _BETAC_BANDS[float(fss_a)] = fss_band_dict[a]
+
+    pdf_conv = PdfPages(out_conv) if has_conv else None
+    with PdfPages(out_avg) as pdf_avg, PdfPages(out_deriv) as pdf_deriv:
+        for alpha in alphas:
+            key = f"a{alpha:.4f}"
+            fss = float(fss_dict.get(alpha, np.nan))
+            betac = fss if not np.isnan(fss) else None
+            betac_str = f"{fss:.3f}" if not np.isnan(fss) else "N/A"
+
+            u_beta     = _safe(data, f"{key}_u_beta")
+            mean_pred  = _safe(data, f"{key}_mean_pred")
+            std_pred   = _safe(data, f"{key}_std_pred")
+            deriv_beta = _safe(data, f"{key}_deriv_beta")
+            deriv_vals = _safe(data, f"{key}_deriv_vals")
+            bc_arr     = _safe(data, f"{key}_beta_c")
+            pred_s     = _safe(data, f"{key}_pred_sample")
+            b_s        = _safe(data, f"{key}_betas_sample")
+
+            if u_beta is None or mean_pred is None:
+                continue
+
+            bc_deriv = float(bc_arr[0]) if bc_arr is not None else np.nan
+
+            # ── avg_analysis.pdf  (4×1 column) ────────────────────────────
+            fig, axes = plt.subplots(4, 1, figsize=(7.5, 16))
+
+            _diag_panel_pred_vs_beta(
+                axes[0], b_s, pred_s, u_beta, mean_pred, std_pred,
+                betac,
+                rf"{obs_label} --- per-sample $\beta_{{\mathrm{{pred}}}}$ vs $\beta$",
+            )
+            _diag_panel_pred_curve(
+                axes[1], u_beta, mean_pred, betac,
+                rf"{obs_label} --- $\langle\beta_{{\mathrm{{pred}}}}\rangle_\beta$ "
+                r"(Fig.~3.7c)",
+            )
+            _diag_panel_pred_deriv(
+                axes[2], deriv_beta, deriv_vals, bc_deriv, betac,
+                rf"{obs_label} --- $d\langle\beta_{{\mathrm{{pred}}}}\rangle/"
+                r"d\beta$ (Fig.~3.7d)",
+            )
+            _diag_panel_pred_residual(
+                axes[3], u_beta, mean_pred, std_pred, betac,
+                rf"{obs_label} --- saturation residual "
+                r"$\langle\beta_{\mathrm{pred}}\rangle - \beta$",
+            )
+
+            fig.suptitle(
+                rf"Prediction-based analysis --- $\alpha={alpha:.4f}$  "
+                rf"$\beta_c(\mathrm{{FSS}})={betac_str}$  "
+                rf"$\beta_c^{{\mathrm{{argmax}}}}={bc_deriv:.2f}$",
+                fontsize=12,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.97])
+            pdf_avg.savefig(fig, dpi=120)
+            plt.close(fig)
+
+            # ── derivative.pdf  (single Fig. 3.7d panel) ──────────────────
+            fig, ax = plt.subplots(figsize=(8.5, 5.0))
+            _diag_panel_pred_deriv(
+                ax, deriv_beta, deriv_vals, bc_deriv, betac,
+                rf"{obs_label} --- $\alpha={alpha:.4f}$",
+            )
+            fig.suptitle(
+                rf"Prediction-based derivative --- "
+                rf"$\beta_c(\mathrm{{FSS}})={betac_str}$",
+                fontsize=12,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.93])
+            pdf_deriv.savefig(fig, dpi=120)
+            plt.close(fig)
+
+            # ── convergence.pdf  (2×2 training diagnostics) ───────────────
+            if pdf_conv is not None:
+                tr_c   = _safe(data, f"{key}_train_curves")
+                va_c   = _safe(data, f"{key}_val_curves")
+                lr_c   = _safe(data, f"{key}_lr_curves")
+                bv_s   = _safe(data, f"{key}_best_val_per_seed")
+                bt_s   = _safe(data, f"{key}_best_train_per_seed")
+                be_s   = _safe(data, f"{key}_best_epoch_per_seed")
+                nep_s  = _safe(data, f"{key}_n_epochs_per_seed")
+                if tr_c is None or va_c is None:
+                    continue
+                fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+                _diag_panel_loss_curves(
+                    axes[0, 0], tr_c, va_c, be_s,
+                    log_y=True, zoom=False, lr_curves=lr_c,
+                    title=rf"{obs_label} --- loss + LR vs epoch (log $y$)",
+                )
+                _diag_panel_loss_curves(
+                    axes[0, 1], tr_c, va_c, be_s,
+                    log_y=False, zoom=True, lr_curves=lr_c,
+                    title=rf"{obs_label} --- loss + LR vs epoch (linear, zoom)",
+                )
+                _diag_panel_seed_losses(
+                    axes[1, 0], bt_s, bv_s,
+                    title=rf"{obs_label} --- best train / val MSE per seed",
+                )
+                _diag_panel_seed_epochs(
+                    axes[1, 1], be_s, nep_s,
+                    title=rf"{obs_label} --- best epoch vs total epochs",
+                )
+                fig.suptitle(
+                    rf"Prediction-based training diagnostics --- "
+                    rf"$\alpha={alpha:.4f}$",
+                    fontsize=12,
+                )
+                fig.tight_layout(rect=[0, 0, 1, 0.95])
+                pdf_conv.savefig(fig, dpi=120)
+                plt.close(fig)
+
+    if pdf_conv is not None:
+        pdf_conv.close()
+
+    print(f"  Saved: {out_avg}")
+    print(f"  Saved: {out_deriv}")
+    if has_conv:
+        print(f"  Saved: {out_conv}")
+    return (out_avg, out_deriv)
+
+
+# ── Mean-based (Arnold 2021) — beta sweep ─────────────────────────────────────
+
+def plot_mean_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir,
+                         fss_band_dict=None, predict_npz=None):
+    """Single-PDF mean-based diagnostic, one page per alpha.
+
+    ``divergence.pdf`` — Δ(β) curve with raw argmax marked.  When the
+    matching ``predict_results_*`` npz is available, overlays the NN
+    derivative on a twin axis for direct cross-check.
+    """
+    if not os.path.exists(npz_path):
+        print(f"  [Mean plot] Not found: {npz_path}"); return
+    data      = np.load(npz_path, allow_pickle=False)
+    obs_label = (model_info.get("observable") or "").replace("_", r"\_")
+
+    out = os.path.join(fig_dir, "divergence.pdf")
+
+    _BETAC_BANDS.clear()
+    if fss_band_dict:
+        for a in alphas:
+            fss_a = float(fss_dict.get(a, np.nan))
+            if not np.isnan(fss_a) and a in fss_band_dict:
+                _BETAC_BANDS[float(fss_a)] = fss_band_dict[a]
+
+    predict_data = None
+    if predict_npz and os.path.exists(predict_npz):
+        predict_data = np.load(predict_npz, allow_pickle=False)
+
+    with PdfPages(out) as pdf:
+        for alpha in alphas:
+            key = f"a{alpha:.4f}"
+            fss = float(fss_dict.get(alpha, np.nan))
+            betac = fss if not np.isnan(fss) else None
+            betac_str = f"{fss:.3f}" if not np.isnan(fss) else "N/A"
+
+            beta_mid = _safe(data, f"{key}_beta_mid")
+            delta    = _safe(data, f"{key}_delta")
+            bc_arr   = _safe(data, f"{key}_beta_c")
+            if beta_mid is None or delta is None:
+                continue
+            bc_mean = float(bc_arr[0]) if bc_arr is not None else np.nan
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+
+            ax.plot(beta_mid, delta, "o-", color=_D_P1, lw=1.7, ms=5,
+                    label=r"$\Delta(\beta)=\|\bar x(\beta+\Delta\beta)-\bar x(\beta-\Delta\beta)\|_2$")
+            idx = int(np.argmax(delta))
+            ax.plot(beta_mid[idx], delta[idx], "o",
+                    ms=12, mfc="yellow", mec="black", zorder=5)
+            ax.axvline(bc_mean, color=_D_P1, ls="--", lw=1.4, alpha=0.85,
+                       label=rf"$\beta_c^{{\mathrm{{mean}}}}={bc_mean:.2f}$")
+            _betac_vline(ax, betac)
+            ax.set_xlabel(r"$\beta$")
+            ax.set_ylabel(r"$\Delta(\beta)$  (per-$\beta$ mean drift, $z$-scored)")
+            ax.set_title(rf"{obs_label} --- Arnold mean-based divergence",
+                         fontsize=11)
+            ax.grid(alpha=0.3)
+            ax.legend(loc="best", fontsize=9, framealpha=0.9)
+
+            # Optional NN derivative on twin axis
+            if predict_data is not None:
+                d_beta_nn = _safe(predict_data, f"{key}_deriv_beta")
+                d_vals_nn = _safe(predict_data, f"{key}_deriv_vals")
+                bc_nn_arr = _safe(predict_data, f"{key}_beta_c")
+                if (d_beta_nn is not None and d_vals_nn is not None
+                        and bc_nn_arr is not None):
+                    ax2 = ax.twinx()
+                    ax2.plot(d_beta_nn, d_vals_nn, "s--", color=_D_P2,
+                             lw=1.2, ms=4, alpha=0.85,
+                             label=rf"NN $d\langle\beta_{{\mathrm{{pred}}}}\rangle/d\beta$")
+                    bc_nn = float(bc_nn_arr[0])
+                    ax2.axvline(bc_nn, color=_D_P2, ls=":", lw=1.4, alpha=0.85,
+                                label=rf"$\beta_c^{{\mathrm{{NN}}}}={bc_nn:.2f}$")
+                    ax2.set_ylabel(r"$d\langle\beta_{\mathrm{pred}}\rangle/d\beta$",
+                                   color=_D_P2, fontsize=10)
+                    ax2.tick_params(axis="y", labelcolor=_D_P2)
+                    ax2.legend(loc="lower right", fontsize=8, framealpha=0.9)
+
+            fig.suptitle(
+                rf"Mean-based --- $\alpha={alpha:.4f}$  "
+                rf"$\beta_c(\mathrm{{FSS}})={betac_str}$",
+                fontsize=12,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.94])
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+    print(f"  Saved: {out}")
+    return out
+
+
+def plot_lbc_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir,
+                        fss_band_dict=None):
+    """Single-PDF Learning-by-Confusion diagnostic, one page per alpha.
+
+    ``confusion.pdf`` — the W-curve: held-out accuracy (mean ± seed std) vs the
+    trial β_c', with the interior W peak marked as the LBC β_c estimate and the
+    FSS reference β_c drawn as a dotted line.
+    """
+    if not os.path.exists(npz_path):
+        print(f"  [LBC plot] Not found: {npz_path}"); return
+    data      = np.load(npz_path, allow_pickle=False)
+    obs_label = (model_info.get("observable") or "").replace("_", r"\_")
+
+    out = os.path.join(fig_dir, "confusion.pdf")
+
+    _BETAC_BANDS.clear()
+    if fss_band_dict:
+        for a in alphas:
+            fss_a = float(fss_dict.get(a, np.nan))
+            if not np.isnan(fss_a) and a in fss_band_dict:
+                _BETAC_BANDS[float(fss_a)] = fss_band_dict[a]
+
+    with PdfPages(out) as pdf:
+        for alpha in alphas:
+            key = f"a{alpha:.4f}"
+            fss = float(fss_dict.get(alpha, np.nan))
+            betac = fss if not np.isnan(fss) else None
+            betac_str = f"{fss:.3f}" if not np.isnan(fss) else "N/A"
+
+            cands    = _safe(data, f"{key}_candidates")
+            mean_acc = _safe(data, f"{key}_mean_acc")
+            std_acc  = _safe(data, f"{key}_std_acc")
+            bc_arr   = _safe(data, f"{key}_beta_c")
+            if cands is None or mean_acc is None:
+                continue
+            bc_lbc = float(bc_arr[0]) if bc_arr is not None else np.nan
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+
+            ax.errorbar(cands, mean_acc, yerr=std_acc,
+                        fmt="o-", color=_D_P1, lw=1.7, ms=5,
+                        ecolor=_D_P1, elinewidth=0.9, capsize=2,
+                        label=r"CV test accuracy $\pm$ seed std")
+            ax.axvline(bc_lbc, color=_D_P1, ls="--", lw=1.4, alpha=0.85,
+                       label=rf"$\beta_c^{{\mathrm{{LBC}}}}={bc_lbc:.2f}$ (W peak)")
+            # highlight the W middle peak
+            idx = int(np.argmin(np.abs(cands - bc_lbc)))
+            ax.plot(cands[idx], mean_acc[idx], "*",
+                    ms=16, mfc="yellow", mec="black", zorder=5)
+            _betac_vline(ax, betac)
+
+            ax.set_xlabel(r"trial $\beta_c'$")
+            ax.set_ylabel("test accuracy")
+            ax.set_ylim(0.45, 1.05)
+            ax.set_title(rf"{obs_label} --- Learning-by-Confusion W-curve",
+                         fontsize=11)
+            ax.grid(alpha=0.3)
+            ax.legend(loc="lower center", fontsize=9, framealpha=0.9)
+
+            fig.suptitle(
+                rf"Learning by Confusion --- $\alpha={alpha:.4f}$  "
+                rf"$\beta_c(\mathrm{{FSS}})={betac_str}$",
+                fontsize=12,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.94])
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+    print(f"  Saved: {out}")
+    return out
+
+
+def plot_lbc_training_curves(npz_path, alphas, model_info, fig_dir):
+    """Per-epoch training diagnostic for LBC, one page per alpha.
+
+    ``training_curves.pdf`` — for the representative candidate (the W peak),
+    three panels show loss, accuracy, and learning rate vs epoch, with one line
+    per seed (train solid, val dashed) and the early-stop best epoch marked.
+    Silently does nothing if the npz carries no training history.
+    """
+    if not os.path.exists(npz_path):
+        return
+    data = np.load(npz_path, allow_pickle=False)
+    have = [a for a in alphas if f"a{a:.4f}_hist_val_loss" in data.files]
+    if not have:
+        return
+
+    obs_label = (model_info.get("observable") or "").replace("_", r"\_")
+    os.makedirs(fig_dir, exist_ok=True)
+    out = os.path.join(fig_dir, "training_curves.pdf")
+
+    with PdfPages(out) as pdf:
+        for alpha in have:
+            key = f"a{alpha:.4f}"
+            tr_loss = data[f"{key}_hist_train_loss"]
+            va_loss = data[f"{key}_hist_val_loss"]
+            tr_acc  = data[f"{key}_hist_train_acc"]
+            va_acc  = data[f"{key}_hist_val_acc"]
+            lr_hist = data[f"{key}_hist_lr"]
+            best_ep = _safe(data, f"{key}_hist_best_epoch")
+            bcp_arr = _safe(data, f"{key}_hist_beta_c_prime")
+            bcp = float(bcp_arr[0]) if bcp_arr is not None else np.nan
+
+            n_seeds = tr_loss.shape[0]
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
+
+            for s in range(n_seeds):
+                color = f"C{s}"
+                valid = ~np.isnan(va_loss[s])
+                ep = np.arange(1, int(valid.sum()) + 1)
+                axes[0].plot(ep, tr_loss[s][valid], "-",  color=color,
+                             lw=1.3, label=f"seed {s} train")
+                axes[0].plot(ep, va_loss[s][valid], "--", color=color,
+                             lw=1.3, label=f"seed {s} val")
+                axes[1].plot(ep, tr_acc[s][valid], "-",  color=color, lw=1.3)
+                axes[1].plot(ep, va_acc[s][valid], "--", color=color, lw=1.3)
+                axes[2].plot(ep, lr_hist[s][valid], "-",  color=color, lw=1.3,
+                             label=f"seed {s}")
+                if best_ep is not None and s < len(best_ep):
+                    be = int(best_ep[s])
+                    axes[0].plot(be + 1, va_loss[s][be], "o", color=color, ms=7,
+                                 mec="black", zorder=5)
+
+            axes[0].set_xlabel("epoch"); axes[0].set_ylabel("BCE loss")
+            axes[0].set_title("loss (— train, -- val; • best epoch)")
+            axes[0].legend(fontsize=7, ncol=max(1, n_seeds))
+            axes[1].set_xlabel("epoch"); axes[1].set_ylabel("accuracy")
+            axes[1].set_title("accuracy (— train, -- val)")
+            axes[2].set_xlabel("epoch"); axes[2].set_ylabel("learning rate")
+            axes[2].set_yscale("log")
+            axes[2].set_title("learning rate")
+            axes[2].legend(fontsize=8)
+            for ax in axes:
+                ax.grid(alpha=0.3)
+
+            fig.suptitle(
+                rf"LBC training --- {obs_label} --- $\alpha={alpha:.4f}$  "
+                rf"(representative candidate $\beta_c'={bcp:.2f}$)",
+                fontsize=12,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.94])
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+    print(f"  Saved: {out}")
+    return out
+
+
+def _assaad_nskips(data, alpha):
+    """nskip values present in an assaad npz for one alpha, sorted ascending."""
+    import re
+    pat = re.compile(rf"a{alpha:.4f}_ns(\d+)_accs$")
+    found = {int(m.group(1)) for f in data.files for m in [pat.match(f)] if m}
+    return sorted(found)
+
+
+def plot_assaad_beta_sweep(npz_path, alphas, fss_dict, model_info, fig_dir,
+                           fss_band_dict=None):
+    """Single-PDF Assaad/GI diagnostic, one page per alpha.
+
+    ``accuracy.pdf`` — test accuracy vs guessed β_c, one curve per nskip window
+    (overlaid), each curve's peak marked as its β_c estimate, with the FSS
+    reference β_c drawn as a dotted line.
+    """
+    if not os.path.exists(npz_path):
+        print(f"  [Assaad plot] Not found: {npz_path}"); return
+    data      = np.load(npz_path, allow_pickle=False)
+    obs_label = (model_info.get("observable") or "").replace("_", r"\_")
+
+    out = os.path.join(fig_dir, "accuracy.pdf")
+
+    _BETAC_BANDS.clear()
+    if fss_band_dict:
+        for a in alphas:
+            fss_a = float(fss_dict.get(a, np.nan))
+            if not np.isnan(fss_a) and a in fss_band_dict:
+                _BETAC_BANDS[float(fss_a)] = fss_band_dict[a]
+
+    with PdfPages(out) as pdf:
+        for alpha in alphas:
+            nskips = _assaad_nskips(data, alpha)
+            if not nskips:
+                continue
+            fss = float(fss_dict.get(alpha, np.nan))
+            betac = fss if not np.isnan(fss) else None
+            betac_str = f"{fss:.3f}" if not np.isnan(fss) else "N/A"
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+            for j, nskip in enumerate(nskips):
+                key = f"a{alpha:.4f}_ns{nskip}"
+                betas = _safe(data, f"{key}_betas")
+                accs  = _safe(data, f"{key}_accs")
+                bc_arr = _safe(data, f"{key}_beta_c")
+                if betas is None or accs is None:
+                    continue
+                color = f"C{j}"
+                bc = float(bc_arr[0]) if bc_arr is not None else np.nan
+                accs_std = _safe(data, f"{key}_accs_std")
+                ax.errorbar(betas, accs, yerr=accs_std, fmt="o-", color=color,
+                            ecolor=color, elinewidth=0.8, capsize=2, lw=1.6, ms=5,
+                            label=rf"nskip$={nskip}$, $\beta_c={bc:.2f}$")
+                idx = int(np.argmax(accs))
+                ax.plot(betas[idx], accs[idx], "*",
+                        ms=15, mfc="yellow", mec="black", zorder=5)
+            _betac_vline(ax, betac)
+
+            ax.set_xlabel(r"guessed $\beta_c$")
+            ax.set_ylabel("test accuracy")
+            ax.set_title(rf"{obs_label} --- Assaad/GI peak accuracy",
+                         fontsize=11)
+            ax.grid(alpha=0.3)
+            ax.legend(loc="best", fontsize=9, framealpha=0.9)
+
+            fig.suptitle(
+                rf"Assaad/GI --- $\alpha={alpha:.4f}$  "
+                rf"$\beta_c(\mathrm{{FSS}})={betac_str}$",
+                fontsize=12,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.94])
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+
+    print(f"  Saved: {out}")
+    return out
+
+
+def plot_assaad_training_curves(npz_path, alphas, model_info, fig_dir):
+    """Per-epoch training diagnostic for Assaad, one page per (alpha, nskip).
+
+    ``training_curves.pdf`` — for the representative guess (closest to FSS β_c)
+    of each nskip, three panels show loss, accuracy, and learning rate vs epoch
+    (train solid, val dashed), with the early-stop best epoch marked.  Silently
+    does nothing if the npz carries no training history.
+    """
+    if not os.path.exists(npz_path):
+        return
+    data = np.load(npz_path, allow_pickle=False)
+    obs_label = (model_info.get("observable") or "").replace("_", r"\_")
+    os.makedirs(fig_dir, exist_ok=True)
+    out = os.path.join(fig_dir, "training_curves.pdf")
+
+    pages = 0
+    with PdfPages(out) as pdf:
+        for alpha in alphas:
+            for nskip in _assaad_nskips(data, alpha):
+                key = f"a{alpha:.4f}_ns{nskip}"
+                vl = _safe(data, f"{key}_hist_val_loss")
+                if vl is None:
+                    continue
+                tl  = data[f"{key}_hist_train_loss"]
+                ta  = data[f"{key}_hist_train_acc"]
+                va  = data[f"{key}_hist_val_acc"]
+                lr  = data[f"{key}_hist_lr"]
+                be_arr  = _safe(data, f"{key}_hist_best_epoch")
+                bcp_arr = _safe(data, f"{key}_hist_beta_c_prime")
+                bcp = float(bcp_arr[0]) if bcp_arr is not None else np.nan
+
+                n_seeds = vl.shape[0]
+                fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
+                for s in range(n_seeds):
+                    color = f"C{s}"
+                    valid = ~np.isnan(vl[s])
+                    ep = np.arange(1, int(valid.sum()) + 1)
+                    axes[0].plot(ep, tl[s][valid], "-",  color=color, lw=1.3,
+                                 label=f"seed {s} train")
+                    axes[0].plot(ep, vl[s][valid], "--", color=color, lw=1.3,
+                                 label=f"seed {s} val")
+                    axes[1].plot(ep, ta[s][valid], "-",  color=color, lw=1.3)
+                    axes[1].plot(ep, va[s][valid], "--", color=color, lw=1.3)
+                    axes[2].plot(ep, lr[s][valid], "-",  color=color, lw=1.3,
+                                 label=f"seed {s}")
+                    if be_arr is not None and s < len(be_arr):
+                        be = int(be_arr[s])
+                        axes[0].plot(be + 1, vl[s][be], "o", color=color, ms=7,
+                                     mec="black", zorder=5)
+
+                axes[0].set_xlabel("epoch"); axes[0].set_ylabel("cross-entropy loss")
+                axes[0].set_title("loss (— train, -- val; • best epoch)")
+                axes[0].legend(fontsize=7, ncol=max(1, n_seeds))
+                axes[1].set_xlabel("epoch"); axes[1].set_ylabel("accuracy")
+                axes[1].set_title("accuracy (— train, -- val)")
+                axes[2].set_xlabel("epoch"); axes[2].set_ylabel("learning rate")
+                axes[2].set_yscale("log")
+                axes[2].set_title("learning rate")
+                axes[2].legend(fontsize=8)
+                for ax in axes:
+                    ax.grid(alpha=0.3)
+
+                fig.suptitle(
+                    rf"Assaad training --- {obs_label} --- $\alpha={alpha:.4f}$, "
+                    rf"nskip$={nskip}$  (representative guess $\beta_c={bcp:.2f}$)",
+                    fontsize=12,
+                )
+                fig.tight_layout(rect=[0, 0, 1, 0.94])
+                pdf.savefig(fig, dpi=120)
+                plt.close(fig)
+                pages += 1
+
+    if pages:
+        print(f"  Saved: {out}")
     return out
 
 
@@ -1213,9 +2092,69 @@ def plot_umap_alpha_sweep(npz_path, betas, model_info, fig_dir):
 
 # ── Top-level orchestrator ────────────────────────────────────────────────────
 
+def plot_input_lattices(npz_path, alphas, fig_dir, model_info):
+    """Provenance page(s): the actual input lattices fed to this ML method.
+
+    Reads the ``a{alpha}_inlat_grids`` / ``..._inlat_betas`` snapshots that the
+    method saved (per-β-mean feature maps on the L×L grid) and renders, for each
+    alpha, a row of those maps.  This makes every method's PDF self-documenting:
+    you can see exactly what observable / transform the method consumed.
+    Silently does nothing if the npz carries no snapshots (non-lattice input).
+    """
+    if not os.path.exists(npz_path):
+        return
+    data = np.load(npz_path, allow_pickle=False)
+    have = [a for a in alphas if f"a{a:.4f}_inlat_grids" in data.files]
+    if not have:
+        return
+
+    obs       = (model_info.get("observable") or "").replace("_", r"\_")
+    transform = model_info.get("transform")
+    tname     = transform or "raw"
+    signed    = transform == "deltasusc"
+    cmap      = plt.get_cmap("coolwarm").copy()
+    cmap.set_bad("0.85")                       # masked origin renders gray
+    os.makedirs(fig_dir, exist_ok=True)
+    out = os.path.join(fig_dir, "input_lattices.pdf")
+
+    with PdfPages(out) as pdf:
+        for alpha in have:
+            grids = data[f"a{alpha:.4f}_inlat_grids"]
+            sbeta = data[f"a{alpha:.4f}_inlat_betas"]
+            ncol  = len(grids)
+            # shared color limits across the row so the β-growth is visible
+            # (the maps are already globally ÷max|dev| normalized).
+            finite = np.concatenate([g[np.isfinite(g)].ravel() for g in grids])
+            if signed:
+                vmax = float(np.abs(finite).max()) or 1.0
+                vmin = -vmax
+            else:
+                vmin, vmax = float(finite.min()), float(finite.max())
+            fig, axes = plt.subplots(1, ncol, figsize=(3.1 * ncol, 3.5),
+                                     squeeze=False)
+            im = None
+            for ax, b, g in zip(axes[0], sbeta, grids):
+                im = ax.imshow(np.ma.masked_invalid(g), origin="lower",
+                               cmap=cmap, vmin=vmin, vmax=vmax)
+                ax.set_title(rf"$\beta t = {b:g}$", fontsize=9)
+                ax.set_xlabel(r"$r_1$"); ax.set_ylabel(r"$r_2$")
+                ax.set_xticks([0, 3, 6, 9]); ax.set_yticks([0, 3, 6, 9])
+            fig.colorbar(im, ax=list(axes[0]), fraction=0.046, pad=0.04)
+            fig.suptitle(
+                rf"ML input --- {obs} --- transform: {tname} --- "
+                rf"$\alpha={alpha:.4f}$"
+                "\n" r"(per-$\beta$ mean of the feature vectors fed to the method;"
+                r" shared color scale)",
+                fontsize=10)
+            pdf.savefig(fig, dpi=120)
+            plt.close(fig)
+    print(f"  Saved: {out}")
+
+
 def run_all_plots(tag, alphas, fss_dict, model_info,
                   alpha_sweep=False, betas=None,
-                  skip_umap=False, results_dir=None):
+                  skip_umap=False, results_dir=None,
+                  fss_band_dict=None):
     """
     Locate .npz result files by tag and generate all PDFs.
 
@@ -1261,27 +2200,96 @@ def run_all_plots(tag, alphas, fss_dict, model_info,
             plot_umap_alpha_sweep(umap_npz, betas, model_info, umap_dir)
 
     else:
-        t_suf    = f"_{tag}" if tag else ""
-        pca_npz  = os.path.join(npz_dir, f"pca_results{t_suf}.npz")
-        umap_npz = os.path.join(npz_dir, f"umap_results{t_suf}.npz")
+        t_suf       = f"_{tag}" if tag else ""
+        pca_npz     = os.path.join(npz_dir, f"pca_results{t_suf}.npz")
+        umap_npz    = os.path.join(npz_dir, f"umap_results{t_suf}.npz")
+        tsne_npz    = os.path.join(npz_dir, f"tsne_results{t_suf}.npz")
+        predict_npz = os.path.join(npz_dir, f"predict_results{t_suf}.npz")
+        mean_npz    = os.path.join(npz_dir, f"mean_results{t_suf}.npz")
+        lbc_npz     = os.path.join(npz_dir, f"lbc_results{t_suf}.npz")
+        assaad_npz  = os.path.join(npz_dir, f"assaad_results{t_suf}.npz")
+        tsne_dir    = _figures_dir(tag, "tsne",       model, rd)
+        predict_dir = _figures_dir(tag, "prediction", model, rd)
+        mean_dir    = _figures_dir(tag, "mean",       model, rd)
+        lbc_dir     = _figures_dir(tag, "lbc",        model, rd)
+        assaad_dir  = _figures_dir(tag, "assaad",     model, rd)
 
-        print("\n[PCA beta-sweep]")
-        plot_pca_beta_sweep(pca_npz, alphas, fss_dict, model_info, pca_dir)
+        if os.path.exists(pca_npz):
+            print("\n[PCA beta-sweep]")
+            plot_pca_beta_sweep(pca_npz, alphas, fss_dict, model_info, pca_dir,
+                                fss_band_dict=fss_band_dict)
 
-        if not skip_umap:
+        if not skip_umap and os.path.exists(umap_npz):
             print("\n[UMAP beta-sweep]")
-            plot_umap_beta_sweep(umap_npz, alphas, fss_dict, model_info, umap_dir)
+            plot_umap_beta_sweep(umap_npz, alphas, fss_dict, model_info, umap_dir,
+                                 fss_band_dict=fss_band_dict)
 
-        print("\n[Summary: β_c vs α]")
-        plot_beta_c_summary(pca_npz, umap_npz, alphas, fss_dict, model_info,
-                            summ_dir)
+        if os.path.exists(tsne_npz):
+            print("\n[t-SNE beta-sweep]")
+            plot_umap_beta_sweep(tsne_npz, alphas, fss_dict, model_info, tsne_dir,
+                                 fss_band_dict=fss_band_dict, method_label="t-SNE")
+
+        if os.path.exists(predict_npz):
+            print("\n[Prediction beta-sweep]")
+            plot_prediction_beta_sweep(predict_npz, alphas, fss_dict,
+                                       model_info, predict_dir,
+                                       fss_band_dict=fss_band_dict)
+
+        if os.path.exists(mean_npz):
+            print("\n[Mean-based beta-sweep]")
+            plot_mean_beta_sweep(mean_npz, alphas, fss_dict,
+                                 model_info, mean_dir,
+                                 fss_band_dict=fss_band_dict,
+                                 predict_npz=(predict_npz
+                                              if os.path.exists(predict_npz)
+                                              else None))
+
+        if os.path.exists(lbc_npz):
+            print("\n[Learning-by-Confusion beta-sweep]")
+            plot_lbc_beta_sweep(lbc_npz, alphas, fss_dict,
+                                model_info, lbc_dir,
+                                fss_band_dict=fss_band_dict)
+            plot_lbc_training_curves(lbc_npz, alphas, model_info, lbc_dir)
+
+        if os.path.exists(assaad_npz):
+            print("\n[Assaad (GI) beta-sweep]")
+            plot_assaad_beta_sweep(assaad_npz, alphas, fss_dict,
+                                   model_info, assaad_dir,
+                                   fss_band_dict=fss_band_dict)
+            plot_assaad_training_curves(assaad_npz, alphas, model_info, assaad_dir)
+
+        if os.path.exists(pca_npz) and os.path.exists(umap_npz):
+            print("\n[Summary: β_c vs α]")
+            plot_beta_c_summary(pca_npz, umap_npz, alphas, fss_dict, model_info,
+                                summ_dir)
+
+        # Input-lattice provenance: one PDF per method showing the exact maps
+        # that method consumed (observable + transform), so every method's
+        # output is self-documenting about its input.
+        print("\n[Input lattices]")
+        for npz_path, fdir in ((pca_npz, pca_dir), (umap_npz, umap_dir),
+                               (tsne_npz, tsne_dir), (predict_npz, predict_dir),
+                               (mean_npz, mean_dir), (lbc_npz, lbc_dir),
+                               (assaad_npz, assaad_dir)):
+            plot_input_lattices(npz_path, alphas, fdir, model_info)
 
     print(f"\nFigures saved under:")
-    print(f"  PCA     →  {pca_dir}")
-    if not skip_umap:
-        print(f"  UMAP    →  {umap_dir}")
-    if not alpha_sweep:
-        print(f"  Summary →  {summ_dir}")
+    if os.path.exists(pca_npz):
+        print(f"  PCA        →  {pca_dir}")
+    if not skip_umap and os.path.exists(umap_npz):
+        print(f"  UMAP       →  {umap_dir}")
+    if not alpha_sweep and os.path.exists(tsne_npz):
+        print(f"  t-SNE      →  {tsne_dir}")
+    if os.path.exists(predict_npz):
+        print(f"  Prediction →  {predict_dir}")
+    if os.path.exists(mean_npz):
+        print(f"  Mean       →  {mean_dir}")
+    if not alpha_sweep and os.path.exists(lbc_npz):
+        print(f"  LBC        →  {lbc_dir}")
+    if not alpha_sweep and os.path.exists(assaad_npz):
+        print(f"  Assaad     →  {assaad_dir}")
+    if not alpha_sweep and os.path.exists(pca_npz) and os.path.exists(umap_npz):
+        print(f"  Summary    →  {summ_dir}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1329,6 +2337,7 @@ def main():
     alphas        = alphas_cli or _cfg.ALPHAS
     file_template = args.file_template or _cfg.FILE_TEMPLATE
     fss_dict      = _cfg.FSS_DICT
+    fss_band_dict = getattr(_cfg, "FSS_BAND_DICT", None)
 
     # Derive observable label from file template
     observable = file_template.split("_L")[0] if file_template else ""
@@ -1344,14 +2353,15 @@ def main():
     }
 
     run_all_plots(
-        tag          = tag,
-        alphas       = alphas,
-        fss_dict     = fss_dict,
-        model_info   = model_info,
-        alpha_sweep  = alpha_sweep,
-        betas        = betas,
-        skip_umap    = skip_umap,
-        results_dir  = results_dir,
+        tag           = tag,
+        alphas        = alphas,
+        fss_dict      = fss_dict,
+        fss_band_dict = fss_band_dict,
+        model_info    = model_info,
+        alpha_sweep   = alpha_sweep,
+        betas         = betas,
+        skip_umap     = skip_umap,
+        results_dir   = results_dir,
     )
 
 

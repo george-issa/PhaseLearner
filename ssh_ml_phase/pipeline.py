@@ -1,12 +1,13 @@
 """
 Pipeline driver for ML phase detection — pure library, no CLI.
 
-Top-level project scripts (run.py, run_pca.py, run_umap.py, run_plot.py)
-build a config dict and call :func:`run`. This module owns:
+Top-level project scripts (run_scripts/run_all.py for computing,
+run_scripts/run_plot.py for plot-only) build a config dict and call
+:func:`run`. This module owns:
 
   1. Applying a model preset.
   2. Resolving OBSERVABLE → DATA_DIR + FILE_TEMPLATE for models with an
-     OBSERVABLES registry (currently only "attractive_hubbard").
+     OBSERVABLES registry ("ssh" and "attractive_hubbard").
   3. Building the run tag.
   4. Calling the requested method modules and the plotting routine.
 """
@@ -15,7 +16,7 @@ from . import config as _cfg
 from .data import make_tag
 
 
-_VALID_METHODS = {"pca", "umap", "assaad", "ae"}
+_VALID_METHODS = {"pca", "umap", "tsne", "assaad", "ae", "predict", "mean", "lbc"}
 
 
 def run(*, model=None, observable=None, alphas=None,
@@ -24,7 +25,9 @@ def run(*, model=None, observable=None, alphas=None,
         methods=("pca", "umap"), plot=False, plot_only=False,
         alpha_sweep=False, betas=None, fss_alpha_c=None,
         latent_dim=2, n_seeds=3, umap_scale_kmeans=True,
-        pca_cluster_method="raw_2d"):
+        pca_cluster_method="raw_2d", pca_cluster_dims=None,
+        n_target=None, transform=None, sid=None,
+        perplexity=30, assaad_nskips=None):
     """
     Run the requested ML methods (and optionally plot) for the given config.
 
@@ -45,7 +48,8 @@ def run(*, model=None, observable=None, alphas=None,
     tag : str, optional
         Output label. ``None`` → auto-generated from ``file_template`` +
         beta bounds + stride.
-    methods : iterable of {"pca", "umap", "assaad", "ae"}
+    methods : iterable of {"pca", "umap", "tsne", "assaad", "ae", "predict",
+        "mean", "lbc"}
         Which method modules to run.
     plot : bool
         Generate PDFs after computing.
@@ -60,7 +64,27 @@ def run(*, model=None, observable=None, alphas=None,
         :func:`ssh_ml_phase.umap_method.run_umap_analysis`.
     pca_cluster_method : str, default "raw_2d"
         Post-PCA clustering recipe.  One of "raw_2d" (default), "spherical",
-        "arcsinh".  See :func:`ssh_ml_phase.pca_method._cluster_pca_scores`.
+        "arcsinh", "log", "gmm".  See
+        :func:`ssh_ml_phase.pca_method._cluster_pca_scores`.
+    pca_cluster_dims : int or None, default None
+        Number of leading PCs the recipe clusters on.  None → the recipe's
+        natural default (1 for "arcsinh", 2 otherwise).
+    perplexity : float, default 30
+        t-SNE neighborhood size (typically 5–50).  Only used by ``"tsne"``.
+    assaad_nskips : sequence of int, or None
+        Guard-window sizes around each guessed β_c for the Assaad method.
+        None → the method's default ``[4, 6, 8]``.  Only used by ``"assaad"``.
+    n_target : float, optional
+        Override the preset's ``N_TARGET`` (filling ⟨n⟩).  Rewrites the
+        ``{n_target:.3f}`` placeholder in ``FILE_TEMPLATE`` and
+        ``OBSERVABLE_DATA_PATTERN``.  Only meaningful for presets that
+        define ``N_TARGET`` (currently ``attractive_hubbard``).
+    sid : str, optional
+        Output-folder ID.  When set, every output is nested under
+        ``results/<sid>/`` (both ``npz/`` and ``figures/``) so different runs
+        stay in separate, comparable folders.  ``None`` → default ``results/``.
+        A plot-only run must use the same ``sid`` as the run that wrote the
+        ``.npz`` files it reads.
     """
     bad = set(methods) - _VALID_METHODS
     if bad:
@@ -68,7 +92,16 @@ def run(*, model=None, observable=None, alphas=None,
 
     # 1. apply model preset
     if model is not None:
-        _cfg.apply_model(model)
+        _cfg.apply_model(model, n_target=n_target)
+
+    # 1b. sID — namespace every output under results/<sid>/ so different runs
+    # (different changes) land in separate, comparable folders.  Set every call
+    # so a None sid resets a previous run's nesting in the same process.
+    _cfg.set_sid(sid)
+
+    # data-loading transform (read lazily by data.load_beta_sweep); set every
+    # call so it never leaks across runs in the same process.
+    _cfg.TRANSFORM = transform
 
     # 2. observable → data_dir + file_template
     if observable is not None:
@@ -110,6 +143,9 @@ def run(*, model=None, observable=None, alphas=None,
     # 5. tag + observable label
     tag = make_tag(beta_min, file_template, tag,
                    beta_max=beta_max, stride=stride)
+    # keep transformed results in their own files (e.g. bond33_position_deltasusc)
+    if transform:
+        tag = f"{tag}_{transform}" if tag else transform
     obs_label = file_template.split("_L")[0] if file_template else ""
     obs_label = "_".join(s for s in obs_label.split("_") if "{" not in s)
     model_info = {
@@ -119,12 +155,15 @@ def run(*, model=None, observable=None, alphas=None,
         "beta_min":   beta_min,
         "beta_max":   beta_max,
         "tag":        tag,
+        "transform":  transform,
     }
 
     # 6. header
     print("=" * 60)
     print(f"ML Phase Detection — model: {model or 'ssh'}  |  "
           f"mode: {'alpha-sweep' if alpha_sweep else 'beta-sweep'}")
+    if sid:
+        print(f"  sID           = {sid}  (outputs under {_cfg.RESULTS_DIR}/)")
     if tag:
         print(f"  tag           = {tag}  (results/npz/*_results_{tag}.npz)")
     print(f"  alphas        = {alphas}")
@@ -148,7 +187,8 @@ def run(*, model=None, observable=None, alphas=None,
                 from .pca_method import run_all_alpha_sweep as pca_run
                 pca_run(betas=betas, file_template=file_template,
                         fss_alpha_c=fss_alpha_c, tag=tag,
-                        cluster_method=pca_cluster_method)
+                        cluster_method=pca_cluster_method,
+                        cluster_dims=pca_cluster_dims)
             if "umap" in methods:
                 print("\n>>> UMAP alpha-sweep <<<")
                 from .umap_method import run_all_alpha_sweep as umap_run
@@ -161,18 +201,26 @@ def run(*, model=None, observable=None, alphas=None,
                 from .pca_method import run_all as pca_run
                 pca_run(alphas=alphas, beta_min=beta_min, beta_max=beta_max,
                         stride=stride, file_template=file_template, tag=tag,
-                        cluster_method=pca_cluster_method)
+                        cluster_method=pca_cluster_method,
+                        cluster_dims=pca_cluster_dims)
             if "umap" in methods:
                 print("\n>>> UMAP <<<")
                 from .umap_method import run_all as umap_run
                 umap_run(alphas=alphas, beta_min=beta_min, beta_max=beta_max,
                          stride=stride, file_template=file_template, tag=tag,
                          scale_kmeans=umap_scale_kmeans)
+            if "tsne" in methods:
+                print("\n>>> t-SNE <<<")
+                from .tsne_method import run_all as tsne_run
+                tsne_run(alphas=alphas, beta_min=beta_min, beta_max=beta_max,
+                         stride=stride, file_template=file_template, tag=tag,
+                         perplexity=perplexity)
             if "assaad" in methods:
                 print("\n>>> Assaad (GI CNN) <<<")
                 from .assaad_method import run_all as assaad_run
-                assaad_run(alphas=alphas, tag=tag, beta_min=beta_min,
-                           beta_max=beta_max, stride=stride,
+                assaad_run(alphas=alphas, tag=tag, n_seeds=n_seeds,
+                           nskip_values=assaad_nskips,
+                           beta_min=beta_min, beta_max=beta_max, stride=stride,
                            file_template=file_template)
             if "ae" in methods:
                 print("\n>>> Autoencoder <<<")
@@ -180,19 +228,38 @@ def run(*, model=None, observable=None, alphas=None,
                 ae_run(alphas=alphas, latent_dim=latent_dim, n_seeds=n_seeds,
                        beta_min=beta_min, beta_max=beta_max, stride=stride,
                        file_template=file_template, tag=tag)
+            if "predict" in methods:
+                print("\n>>> Prediction-based (β regressor) <<<")
+                from .prediction_method import run_all as predict_run
+                predict_run(alphas=alphas, n_seeds=n_seeds,
+                            beta_min=beta_min, beta_max=beta_max, stride=stride,
+                            file_template=file_template, tag=tag)
+            if "mean" in methods:
+                print("\n>>> Mean-based (Arnold 2021) <<<")
+                from .mean_method import run_all as mean_run
+                mean_run(alphas=alphas,
+                         beta_min=beta_min, beta_max=beta_max, stride=stride,
+                         file_template=file_template, tag=tag)
+            if "lbc" in methods:
+                print("\n>>> Learning by Confusion (van Nieuwenburg 2017) <<<")
+                from .lbc_method import run_all as lbc_run
+                lbc_run(alphas=alphas, n_seeds=n_seeds,
+                        beta_min=beta_min, beta_max=beta_max, stride=stride,
+                        file_template=file_template, tag=tag)
 
     # 8. plot
     if plot or plot_only:
         print("\n>>> Plot <<<")
         from .plot import run_all_plots
         run_all_plots(
-            tag         = tag,
-            alphas      = alphas,
-            fss_dict    = _cfg.FSS_DICT,
-            model_info  = model_info,
-            alpha_sweep = alpha_sweep,
-            betas       = betas,
-            skip_umap   = "umap" not in methods,
+            tag           = tag,
+            alphas        = alphas,
+            fss_dict      = _cfg.FSS_DICT,
+            fss_band_dict = getattr(_cfg, "FSS_BAND_DICT", None),
+            model_info    = model_info,
+            alpha_sweep   = alpha_sweep,
+            betas         = betas,
+            skip_umap     = "umap" not in methods,
         )
 
     print("\n" + "=" * 60)

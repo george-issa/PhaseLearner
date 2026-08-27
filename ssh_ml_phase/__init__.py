@@ -7,6 +7,7 @@ Submodules:
     pca_method      - PCA-based beta_c extraction
     umap_method     - UMAP-based beta_c extraction (KMeans + GMM)
     assaad_method   - Greitemann-Iqbal (Assaad) CNN method
+    lbc_method      - Learning by Confusion (van Nieuwenburg 2017)
     autoencoder     - Autoencoder anomaly detection
 """
 
