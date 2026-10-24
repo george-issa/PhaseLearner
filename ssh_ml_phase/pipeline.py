@@ -214,7 +214,7 @@ def run(*, model=None, observable=None, alphas=None,
                 from .tsne_method import run_all as tsne_run
                 tsne_run(alphas=alphas, beta_min=beta_min, beta_max=beta_max,
                          stride=stride, file_template=file_template, tag=tag,
-                         perplexity=perplexity)
+                         perplexity=perplexity, model=model)
             if "assaad" in methods:
                 print("\n>>> Assaad (GI CNN) <<<")
                 from .assaad_method import run_all as assaad_run
