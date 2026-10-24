@@ -1,135 +1,99 @@
 # PhaseLearner
 
-Machine learning methods for detecting phase transitions in the optical SSH (Su-Schrieffer-Heeger) model. Four unsupervised/semi-supervised approaches are benchmarked against finite-size scaling (FSS) reference values for the valence bond solid (VBS) critical inverse temperature $\beta_c$.
+Unsupervised and semi-supervised machine learning for locating finite-temperature
+phase transitions in determinant quantum Monte Carlo (DQMC) data.
 
-## Physical Context
+The main target is the **optical Su-Schrieffer-Heeger (oSSH) model** on the
+honeycomb lattice ($L = 12$, $\omega = 0.5$), where the electron-phonon coupling
+$\alpha$ drives a Kekulé valence-bond-solid (KVBS) transition. Each method
+estimates the critical inverse temperature $\beta_c$ from equal-time or
+$\tau$-integrated correlators, and the result is checked against finite-size
+scaling (FSS):
 
-All models are use an $L \times L$ lattice, with $L =12$, filled with bond-bond correlation data in momentum space. The key parameters are:
+| $\alpha$  | 0.240 | 0.245 | 0.250 | 0.255 |
+| --------- | ----- | ----- | ----- | ----- |
+| $\beta_c$ (FSS) | 17.5 | 14.3 | 12.5 | 12.3 |
 
-- **$\alpha$** — coupling constant (0.240, 0.245, 0.250, 0.255)
-- **$\beta$** — inverse temperature; the goal is to identify the critical value β_c where the VBS phase transition occurs
-- **$\omega= 0.5$** — phonon frequency
-
-All parameters are in units of $t$, the hopping amplitude of electrons appearing in the kinetic term of the Hamiltonian.
-
-FSS reference values:
-
-| $\alpha$  | $\beta_c$ |
-| --------- | --------- |
-|   0.240   |   17.5    |
-|   0.245   |   14.3    |
-|   0.250   |   12.5    |
-|   0.255   |   12.3    |
+All energies are in units of the hopping $t$. The same pipeline also runs on the
+Holstein, bond-Holstein and attractive-Hubbard models (see `MODEL_CONFIGS` in
+`ssh_ml_phase/config.py`).
 
 ## Methods
 
-### 1. PCA (`pca_method.py`)
-Principal Component Analysis on the $L^2$-dimensional bond-bond correlator configurations. $\beta_c$ is estimated from:
-- **PCA susceptibility**
-Peak of $Var(P_1)$ and $Var(P_2)$ as a function of $\beta$ (analogous to magnetic susceptibility)
-- **KMeans clustering**
-$k=2$ clustering in $(P_1, P_2)$ space; sigmoid fit to the KVBS fraction $f_{KVBS}(\beta)$
+| Key       | Module                 | How $\beta_c$ is read off |
+| --------- | ---------------------- | ------------------------- |
+| `pca`     | `pca_method.py`        | Peak of the PCA susceptibility $\mathrm{Var}(P_1)$, or of $d\langle\lvert P_1\rvert\rangle/d\beta$ for monotone observables |
+| `umap`    | `umap_method.py`       | PCA → UMAP embedding, KMeans/GMM clustering, sigmoid fit to the ordered fraction |
+| `tsne`    | `tsne_method.py`       | PCA → t-SNE map; cluster structure and the density "neck" along the $\beta$ path |
+| `ae`      | `autoencoder.py`       | Autoencoder with a 2D latent space; peak of $\mathrm{Var}(z_0)$ |
+| `predict` | `prediction_method.py` | MLP regresses $\beta$; peak of $d\langle\beta_\mathrm{pred}\rangle/d\beta$ |
+| `mean`    | `mean_method.py`       | Optimal-regressor limit of `predict` (Arnold et al. 2021) |
+| `assaad`  | `assaad_method.py`     | Classifier sweep over trial $\beta_c$ (Greitemann–Iqbal); needs ~1000 samples per $\beta$ |
+| `lbc`     | `lbc_method.py`        | Learning by confusion (van Nieuwenburg et al. 2017); W-shaped accuracy curve |
 
-### 2. UMAP (`umap_method.py`)
-Non-linear dimensionality reduction to a $2$-dimensional embedding, followed by:
-- **KMeans clustering** 
-and sigmoid fit to $f_{KVBS}(\beta)$
-- **GMM (Gaussian Mixture Model)** 
-clustering as a secondary estimate
+## Repository layout
 
-### 3. Assaad / Greitemann–Iqbal method (`assaad_method.py`)
-CNN-based approach: trains a classifier to distinguish configurations on either side of a guessed $\beta_c$, then sweeps over candidate values. The true $\beta_c$ maximizes test accuracy. Needs significantly more samples than the rest of the methods!
+```
+PhaseLearner/
+├── ssh_ml_phase/      Python package: config, data loading, methods, plotting, pipeline
+├── scripts/           Entry points for runs, sweeps, summaries and diagnostic plots
+├── sims/
+│   ├── ssh/           oSSH DQMC driver (Julia), SLURM submitters, JLD2/HDF5 → CSV extraction
+│   └── hubbard_square/  Attractive-Hubbard pilot: driver, runner, HDF5 → CSV extraction
+├── lbc_validation/    Known-answer test of learning by confusion on the 2D Ising model
+├── paper/             Paper figure scripts (paper/scripts) and note figures (paper/notes/figs)
+├── notebooks/         Exploratory and plotting notebooks
+├── results/           Method outputs (.npz) and summary tables
+├── environment.yml    Conda environment (Python side)
+├── Project.toml       Julia environment (DQMC side, SmoQyDQMC + MPI)
+└── setup_local.sh     One-shot local setup of both environments
+```
 
-### 4. Autoencoder (`autoencoder.py`)
-An autoencoder with a $2$-dimensional bottleneck (`latent_dim=2`) trained on all configurations. $\beta_c$ is estimated from:
-- **Reconstruction error** 
-The reconstruction error is highest at $\beta_c$ since ambiguity is notable accross many samples
-- **Latent KMeans**
-$k=2$ clustering in latent space $(z_0, z_1)$ with sigmoid fit
+Input data live in `data/<model>/` and are not tracked.
 
 ## Installation
 
 ```bash
-pip install -e .
+conda env create -f environment.yml    # creates "phaselearner" and installs the package
+conda activate phaselearner
 ```
 
-For UMAP support:
+To also set up the Julia environment for running simulations locally:
 
 ```bash
-pip install -e ".[umap]"
+bash setup_local.sh
 ```
-
-**Requirements:** Python ≥ 3.8, numpy, scipy, scikit-learn, torch, matplotlib. Optional: umap-learn.
-
-## Data
-
-Place input CSV files in a `NEW/` directory at the project root. Each file should be named:
-
-```
-BondBond012345_momentum_L12_w0.5_m0.0_a{alpha:.4f}-1.csv
-```
-
-Each row contains $144$ momentum-space features (flattened $12\times12$ lattice) followed by the inverse temperature $\beta$.
 
 ## Usage
 
-### Run all methods
+Every run goes through `scripts/run_all.py`. Edit its DATA block (model,
+observables, $\alpha$ values, $\beta$ window) and METHODS block (which methods
+to run and their settings), then:
 
 ```bash
-python -m ssh_ml_phase
+python scripts/run_all.py
 ```
 
-### Run individual methods
+Results are written to `results/npz/<method>_results_<tag>.npz`, and figures
+(with `PLOT = True`) to `results/figures/<model>/<method>/<tag>/`. Setting `SID`
+nests both under `results/<SID>/`. To re-render figures from existing results
+without recomputing:
 
 ```bash
-python -m ssh_ml_phase.pca_method
-python -m ssh_ml_phase.umap_method
-python -m ssh_ml_phase.assaad_method
-python -m ssh_ml_phase.autoencoder
+python scripts/run_plot.py
 ```
 
-### Single alpha (fast iteration)
+Each input CSV holds one configuration per row: the flattened correlator
+features followed by $\beta$ in the last column.
 
-```bash
-python -m ssh_ml_phase.pca_method --alphas 0.240
-```
+## Simulations
 
-### Skip slow methods
+`sims/ssh/` holds the oSSH DQMC driver and everything needed to go from raw
+output to ML-ready CSVs. Run the submitters from the repo root, for example
+`python sims/ssh/run_SSH_edited2.py`; `sims/ssh/RUN_PROCEDURE.md` walks through
+a full workstation run. The attractive-Hubbard pilot in `sims/hubbard_square/`
+follows the same pattern.
 
-```bash
-python -m ssh_ml_phase --skip-assaad --skip-ae
-```
+## License
 
-Results are saved as `.npz` files in the `results/` directory.
-
-## Visualization
-
-Open `SSH_ML_phase_detection.ipynb` after running the methods. The notebook loads the pre-computed `.npz` result files and generates comparison plots saved to `ssh_ml_phase/figures/`:
-
-| Figure | Content |
-|--------|---------|
-| `PCA_susceptibility_argmax.pdf` | $Var(P_1)$, $Var(P_2)$, and their derivatives vs $\beta$ |
-| `PCA_kmeans.pdf` | $2D$ PCA embedding and KMeans $f_{KVBS}$ curves |
-| `UMAP_beta_c.pdf` | UMAP embedding and KMeans/GMM $f_{KVBS}$ curves |
-| `Part4_autoencoder.pdf` | Mean reconstruction error, derivative, and latent order parameter |
-| `Part4_latent_scatter.pdf` | Autoencoder latent space scatter coloured by $\beta$ and cluster |
-| `Final_summary_all_methods.pdf` | All methods' $\beta_c$ estimates vs FSS reference |
-
-## Project Structure
-
-```
-PhaseLearner/
-├── ssh_ml_phase/
-│   ├── config.py          # FSS references, paths, physical constants
-│   ├── data.py            # CSV loading utilities
-│   ├── pca_method.py      # PCA susceptibility and KMeans
-│   ├── umap_method.py     # UMAP + KMeans/GMM
-│   ├── assaad_method.py   # Greitemann–Iqbal CNN method
-│   ├── autoencoder.py     # Autoencoder anomaly detection
-│   ├── run_all.py         # Orchestrates all methods
-│   └── figures/           # Output plots
-├── results/               # Saved .npz result files (generated)
-├── NEW/                   # Input CSV data (not tracked)
-├── SSH_ML_phase_detection.ipynb
-└── setup.py
-```
+MIT; see `LICENSE`.
