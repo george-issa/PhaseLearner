@@ -3,12 +3,12 @@
 Run PCA β_c extraction on *all* oSSH observables (sID-5 1000-bin runs).
 
 Inputs:  data/ssh/csv/<obs>_L12_w0.5_m0.0_a{alpha:.4f}-5.csv
-         (built by create_csv_ssh_all_obs.py from the JLD2 sim data)
+         (built by sims/ssh/create_csv_ssh_all_obs.py from the JLD2 sim data)
 Outputs: results/npz/pca_results_<obs>_sid5.npz                 (one per observable)
          results/figures/ssh/pca/<obs>_sid5/{avg_analysis,embedding,PC_layout}.pdf
             = multi-page PDFs, one page per alpha (all 5 alphas in each file)
 
-The observable set (32) mirrors create_csv_ssh_all_obs.py:
+The observable set (32) mirrors sims/ssh/create_csv_ssh_all_obs.py:
   * each bond id-pair separately, eq-time + integrated, position + momentum
   * each greens id-pair separately, eq-time only, position + momentum
   * the KVBS combination, momentum only, eq-time + integrated
@@ -39,7 +39,7 @@ SPACES = ["position", "momentum"]
 
 
 def all_observables():
-    """The 32 observables produced by create_csv_ssh_all_obs.py."""
+    """The 32 observables produced by sims/ssh/create_csv_ssh_all_obs.py."""
     obs = []
     for prefix in ("", "integrated_"):
         for ab in BOND_PAIRS:

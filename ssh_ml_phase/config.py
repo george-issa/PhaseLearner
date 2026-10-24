@@ -326,7 +326,7 @@ def list_observables(model, kind="all"):
 #   Green's function momentum-space:
 #     "greens0_momentum_L12_w0.5_m0.0_a{alpha:.4f}-1.csv"          144 features
 #
-# Phonon observables (produced by extract_phonons.py after new DQMC runs):
+# Phonon observables (produced by sims/ssh/extract_phonons_edited.py after new DQMC runs):
 #   Tau=0 phonon field (raw x,y displacements for all 4 modes):
 #     "phonon_tau0_L12_w0.5_m0.0_a{alpha:.4f}-1.csv"               576 features
 #     Use with: PCA Var(P1) may give a circle (3-domain KVBS).

@@ -3,7 +3,7 @@
 PCA beta_c recovery on the recent (sID-5) oSSH runs.
 
 Inputs:  data/ssh/csv/<obs>_L12_w0.5_m0.0_a{alpha:.4f}-5.csv
-         (built by create_csv_jld2_betasweep.py from the JLD2 sim data)
+         (built by sims/ssh/create_csv_jld2_betasweep.py from the JLD2 sim data)
 Outputs: results/npz/pca_results_<obs>_sid5.npz
          results/figures/ssh/pca/alpha<a>/<obs>/results.pdf
          (merged avg_analysis + embedding + PC_layout pages for that alpha;

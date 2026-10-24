@@ -7,7 +7,7 @@ identical inputs.  Sibling of run_pca_ssh_all_obs.py / run_umap_ssh_all_obs.py,
 which run a single method each.
 
 Inputs:  data/ssh/csv/<obs>_L12_w0.5_m0.0_a{alpha:.4f}-5.csv
-         (built by create_csv_ssh_all_obs.py + extract_phonons_edited.py)
+         (built by sims/ssh/create_csv_ssh_all_obs.py + sims/ssh/extract_phonons_edited.py)
 Outputs: results/<sid>/npz/{pca,umap,tsne}_results_<obs>_sid5.npz
 
 The default --sid keeps this sweep out of the top-level results/npz/, so the
