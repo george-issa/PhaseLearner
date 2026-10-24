@@ -53,7 +53,7 @@ from their last checkpoint. To stop everything: `pkill -f oSSH_array_runner.jl`
 ```bash
 cd ~/Documents/SSH/PhaseLearner/sims/ssh
 env -u LD_LIBRARY_PATH julia +1.8.5 --project=$HOME/oSSH_env convert_jld2_csv_edited.jl
-python3 ../../extract_phonons_edited.py --data-root /nfs/home/gissa/Documents/SSH/PhaseLearner/data/ssh/sim_data
+python3 extract_phonons_edited.py --data-root /nfs/home/gissa/Documents/SSH/PhaseLearner/data/ssh/sim_data
 ```
 
 Then sync the 7 new `ossh_*-5` folders down to the Mac (`data/ssh/sim_data/`)

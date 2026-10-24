@@ -3,7 +3,7 @@
 Heatmap visualization of the new SSH DQMC phonon outputs.
 
 Two observables, written by the Julia runs into each sim folder's
-Phonon_positions/ and consolidated by extract_phonons_edited.py into
+Phonon_positions/ and consolidated by sims/ssh/extract_phonons_edited.py into
 data/ssh/csv/ (sID-5, 1000 bins x 33 betas = 33000 rows per alpha):
 
   phonon_tau0_L12_w0.5_m0.0_a{alpha:.4f}-5.csv          (33000, 577)
@@ -18,7 +18,7 @@ data/ssh/csv/ (sID-5, 1000 bins x 33 betas = 33000 rows per alpha):
       r_s[i] = mean_tau sqrt(Xs[i,tau]^2 + Ys[i,tau]^2),  s in {A, B}.
       Layout: interleaved per unit cell [rA0, rB0, rA1, rB1, ..., beta]
       (the Julia writer's block-layout comment is wrong; see
-      extract_phonons_edited.py for the empirical verification).
+      sims/ssh/extract_phonons_edited.py for the empirical verification).
 
 For each alpha, two figures are saved to data/ssh/figures/:
 
@@ -43,7 +43,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "sims", "ssh"))
 from extract_phonons_edited import decode_phonon_row, decode_radial_row
 
 L = 12
