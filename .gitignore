@@ -1,27 +1,41 @@
-obsidian/
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.DS_Store
-.ipynb_checkpoints/
+*.py[co]
+*.egg-info/
 build/
 dist/
-*.egg-info/
+.ipynb_checkpoints/
 .env
-figures/
+
+# OS and editor
+.DS_Store
+.claude/
+
+# Data, reference papers and local notes
 data/
-*.jl
-create*
-extract*
-*.txt
-run_SSH_edited.py
+material/
+obsidian/
+notes/*
+!notes/*.md
+
+# Generated figures and bulky intermediates
+figures/
+results/method_compare/npz/
+results/lbc_ising_check/work/
+
+# LaTeX sources and build output
+*.tex
+*.pdf
 *.aux
-*.fdb*
+*.fdb_latexmk
 *.fls
 *.log
 *.out
-*.pdf
-*.gz
-*.tex
-%*
-results/lbc_ising_check/work/
+*.synctex.gz
+
+# Per-job files written by the simulation runners
+oSSH_honeycomb_L*
+run_alpha240_pending.sh
+sims/ssh/run_missing_sweep.sh
+sims/ssh/*.output
+sims/hubbard_square/hubbard_square_U*
