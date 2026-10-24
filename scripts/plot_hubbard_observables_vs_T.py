@@ -52,7 +52,7 @@ plt.rcParams.update({
 })
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIM_ROOT     = os.path.join(PROJECT_ROOT, "data", "hubbard_square", "sim_data")
 OUT_DIR      = os.path.join(PROJECT_ROOT, "data", "hubbard_square", "figures")
 NPZ_DIR      = os.path.join(PROJECT_ROOT, "results", "npz")

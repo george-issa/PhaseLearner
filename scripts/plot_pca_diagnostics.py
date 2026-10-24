@@ -36,7 +36,7 @@ plt.rcParams.update({
     "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
 })
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR  = os.path.join(PROJECT_ROOT, "results")
 NPZ_DIR      = os.path.join(RESULTS_DIR, "npz")
 # Per-observable PDFs land alongside the canonical pipeline plots:

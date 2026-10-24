@@ -1,6 +1,6 @@
 # LBC validation — 2D Ising
 
-A regression test for the learning-by-confusion pipeline in `../lbc_train.py`.
+A regression test for the learning-by-confusion pipeline in `../scripts/lbc_train.py`.
 It runs LBC against a model with a known critical point — the 2D square Ising
 model, exact `Tc = 2/ln(1+sqrt2) = 2.269 J` — so any change to the CNN, the
 augmentation, or the sweep logic can be checked against the right answer.

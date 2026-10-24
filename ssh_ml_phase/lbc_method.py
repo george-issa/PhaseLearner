@@ -20,7 +20,7 @@ characteristic **W-shape**:
 Classifier
 ----------
 A small CNN (`SimpleCNN`) trained with early stopping — same architecture and
-training structure as the standalone ``lbc_train.py``: one conv block + an MLP
+training structure as the standalone ``scripts/lbc_train.py``: one conv block + an MLP
 head with a single sigmoid output, BCE loss, an Adam optimiser, and a
 ``ReduceLROnPlateau`` schedule monitored on a validation split.  The feature
 vector is reshaped onto the L×L lattice, so this method needs square-lattice

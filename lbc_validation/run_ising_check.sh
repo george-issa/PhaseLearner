@@ -20,7 +20,7 @@ echo "[1/3] Generating 4x4 Ising snapshots ..."
     --L 4 --tmin 1.0 --tmax 3.6 --ntemp 27 --chains 300 --warmup 2000
 
 echo "[2/3] Running LBC sweep (27 CNNs) ..."
-"$PY" "$ROOT/lbc_train.py" "$WORK/ising_L4.csv" "$WORK/lbc_out" \
+"$PY" "$ROOT/scripts/lbc_train.py" "$WORK/ising_L4.csv" "$WORK/lbc_out" \
     --tc-min 1.0 --tc-max 3.6 --num-tc 27 \
     --L 4 --batch-size 64 --num-epochs 80 --patience-lr 6 --patience-stop 12
 

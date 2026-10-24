@@ -45,7 +45,7 @@ plt.rcParams.update({
     "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
 })
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Per-observable PDFs land alongside the canonical pipeline plots:
 #   results/figures/<model>/pca/<observable>/clustering_comparison.pdf
 MODEL_NAME   = "attractive_hubbard"

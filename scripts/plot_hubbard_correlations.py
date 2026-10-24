@@ -41,7 +41,7 @@ plt.rcParams.update({
     "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
 })
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Raw-data inspection plots live alongside the data they describe:
 # data/<model>/figures/  — sibling of  data/<model>/sim_data/  and  data/<model>/csv/.
 OUTDIR = os.path.join(PROJECT_ROOT, "data", "hubbard_square", "figures")
