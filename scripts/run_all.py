@@ -3,7 +3,7 @@
 PhaseLearner — single entry point.
 
     conda activate phaselearner
-    python run_scripts/run_all.py
+    python scripts/run_all.py
 
 Three sections to edit:
 

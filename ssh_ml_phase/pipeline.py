@@ -1,8 +1,8 @@
 """
 Pipeline driver for ML phase detection — pure library, no CLI.
 
-Top-level project scripts (run_scripts/run_all.py for computing,
-run_scripts/run_plot.py for plot-only) build a config dict and call
+Top-level project scripts (scripts/run_all.py for computing,
+scripts/run_plot.py for plot-only) build a config dict and call
 :func:`run`. This module owns:
 
   1. Applying a model preset.

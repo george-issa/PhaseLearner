@@ -4,7 +4,7 @@ Re-render PDFs from existing .npz results — no recomputation.
 
 Edit the USER CONFIG block, then::
 
-    python run_scripts/run_plot.py
+    python scripts/run_plot.py
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

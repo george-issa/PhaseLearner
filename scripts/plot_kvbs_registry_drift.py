@@ -24,7 +24,7 @@ bond stretches e_hat(theta_d).(u_B - u_A) for the three NN bonds
 
 Output: data/ssh/figures/kvbs_registry_drift_a{alpha}_b{beta}.png
 
-Run:  python3 run_scripts/plot_kvbs_registry_drift.py [alpha beta]
+Run:  python3 scripts/plot_kvbs_registry_drift.py [alpha beta]
 """
 import os
 import sys

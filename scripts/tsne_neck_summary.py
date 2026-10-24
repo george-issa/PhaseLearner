@@ -12,7 +12,7 @@ Output: results/npz/tsne_neck_<observable>.npz with arrays
 which paper/scripts/fig_phase_diagram.py reads.
 
 Usage (repo root):
-    python run_scripts/tsne_neck_summary.py BondBond012345_momentum \\
+    python scripts/tsne_neck_summary.py BondBond012345_momentum \\
         --tags BondBond012345_momentum_neck_p30 BondBond012345_momentum_neck_p100 ...
 """
 import argparse

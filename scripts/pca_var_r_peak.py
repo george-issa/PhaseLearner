@@ -24,7 +24,7 @@ expected direction.
 Output: results/npz/pca_var_r_<observable>.npz with alphas, beta_c, beta_lo,
 beta_hi, n_boot -- read by paper/scripts/fig_phase_diagram.py.
 
-Usage (repo root):  python run_scripts/pca_var_r_peak.py [--n-boot 200]
+Usage (repo root):  python scripts/pca_var_r_peak.py [--n-boot 200]
 """
 import argparse
 import os

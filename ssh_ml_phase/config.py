@@ -55,7 +55,7 @@ FSS_DICT = dict(zip(FSS_ALPHA, FSS_BETA_C))
 
 # ── oSSH observable registry ─────────────────────────────────────────────────
 # The 32 observable names selectable for MODEL="ssh".  Pass one as OBSERVABLE
-# in run_scripts/run_*.py (or observable= to pipeline.run); the CSV path is then
+# in scripts/run_*.py (or observable= to pipeline.run); the CSV path is then
 # resolved via OBSERVABLE_DATA_PATTERN below.  Data: data/ssh/csv/ (sID-5 sweep).
 #
 # Three families (eq-time = no prefix; integrated_ = β-integrated susceptibility):
@@ -115,7 +115,7 @@ MODEL_CONFIGS = {
         # ── Observable registry (sID-5 per-pair / KVBS CSVs) ─────────────────
         # The flat CSVs live directly in DATA_DIR (= data/ssh/csv), so the
         # pattern's data_subdir is empty.  Select by name, e.g.
-        #   run_scripts/run_pca.py: MODEL="ssh", OBSERVABLE="bond33_momentum".
+        #   scripts/run_all.py: MODEL="ssh", OBSERVABLE="bond33_momentum".
         # Default FILE_TEMPLATE above (the -1 legacy data) is untouched; the
         # registry resolves the -5 sweep separately when OBSERVABLE is set.
         "OBSERVABLES":       _SSH_OBSERVABLES,
@@ -165,7 +165,7 @@ MODEL_CONFIGS = {
         "BETA_MAX_PER_ALPHA": {},
         # ── Observable registry ──────────────────────────────────────────────
         # Each Hubbard observable lives in its own subdir under
-        # DATA_DIR/hubbard_square/csv/.  Set OBSERVABLE in run_scripts/* (or
+        # DATA_DIR/hubbard_square/csv/.  Set OBSERVABLE in scripts/* (or
         # pass observable= to pipeline.run) to one of these names and
         # DATA_DIR + FILE_TEMPLATE are resolved automatically via
         # OBSERVABLE_DATA_PATTERN below.  Layout:

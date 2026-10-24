@@ -14,7 +14,7 @@ Two estimators are tabulated (β_c array layout in pca_method.run_all):
 Observables are ranked by RMS relative error of `best` vs FSS over the alphas
 that have an FSS reference (0.240, 0.245, 0.250, 0.255; 0.2425 has none).
 
-Run:  python run_scripts/summarize_pca_ssh_betac.py
+Run:  python scripts/summarize_pca_ssh_betac.py
 """
 import os
 import sys

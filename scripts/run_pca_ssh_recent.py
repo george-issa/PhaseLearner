@@ -9,7 +9,7 @@ Outputs: results/npz/pca_results_<obs>_sid5.npz
          (merged avg_analysis + embedding + PC_layout pages for that alpha;
           the three component PDFs are kept alongside)
 
-Run:  python run_scripts/run_pca_ssh_recent.py [observable ...]
+Run:  python scripts/run_pca_ssh_recent.py [observable ...]
       (no args = all of OBSERVABLES_DEFAULT)
 """
 import os

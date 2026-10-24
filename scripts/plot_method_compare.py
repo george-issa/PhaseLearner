@@ -15,8 +15,8 @@ whose beta_c rises by more than 1.0 between consecutive alphas — the physical
 boundary falls with alpha, so a large rise means the number is not tracking
 the transition however good its RMSE looks.
 
-Run:  python run_scripts/plot_method_compare.py
-      python run_scripts/plot_method_compare.py --sid method_compare
+Run:  python scripts/plot_method_compare.py
+      python scripts/plot_method_compare.py --sid method_compare
 """
 import argparse
 import os

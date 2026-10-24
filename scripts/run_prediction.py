@@ -4,7 +4,7 @@ Run the prediction-based method (NN regresses β from configurations).
 
 Edit the USER CONFIG block, then::
 
-    python run_scripts/run_prediction.py
+    python scripts/run_prediction.py
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

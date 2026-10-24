@@ -25,9 +25,9 @@ rise      Largest increase of beta_c between consecutive alphas, in units of
           (12.5 -> 12.3), so a rise of ~0.2 is noise and only a large one
           (>~1) means the estimator is tracking something else.
 
-Run:  python run_scripts/compare_methods_ssh.py --sid method_compare
-      python run_scripts/compare_methods_ssh.py --pca-extra
-      python run_scripts/compare_methods_ssh.py --csv results/method_compare_summary.csv
+Run:  python scripts/compare_methods_ssh.py --sid method_compare
+      python scripts/compare_methods_ssh.py --pca-extra
+      python scripts/compare_methods_ssh.py --csv results/method_compare_summary.csv
 """
 import argparse
 import os

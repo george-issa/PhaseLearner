@@ -54,7 +54,7 @@ Function -> figure map:
   beta_c()           FSS beta_c shown in titles / sweep panel marker.
   discover_runs()    locates the sim folders all figures read from.
 
-Run:  python3 run_scripts/plot_bondbond_kvbs_heatmaps.py [alpha ...]
+Run:  python3 scripts/plot_bondbond_kvbs_heatmaps.py [alpha ...]
 """
 import os
 import re

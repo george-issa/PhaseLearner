@@ -13,10 +13,10 @@ The observable set (32) mirrors create_csv_ssh_all_obs.py:
   * each greens id-pair separately, eq-time only, position + momentum
   * the KVBS combination, momentum only, eq-time + integrated
 
-Run:  python run_scripts/run_pca_ssh_all_obs.py                  # compute all 32
-      python run_scripts/run_pca_ssh_all_obs.py bond33_momentum  # a subset
-      python run_scripts/run_pca_ssh_all_obs.py --plot           # compute + plot
-      python run_scripts/run_pca_ssh_all_obs.py --plot-only      # plot from existing npz
+Run:  python scripts/run_pca_ssh_all_obs.py                  # compute all 32
+      python scripts/run_pca_ssh_all_obs.py bond33_momentum  # a subset
+      python scripts/run_pca_ssh_all_obs.py --plot           # compute + plot
+      python scripts/run_pca_ssh_all_obs.py --plot-only      # plot from existing npz
 """
 import argparse
 import os

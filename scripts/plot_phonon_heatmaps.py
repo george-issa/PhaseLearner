@@ -32,7 +32,7 @@ For each alpha, two figures are saved to data/ssh/figures/:
       <rA>, <rB> at that beta (the means are where the ordering pattern
       becomes visible above the snapshot noise).
 
-Run:  python3 run_scripts/plot_phonon_heatmaps.py [alpha ...]
+Run:  python3 scripts/plot_phonon_heatmaps.py [alpha ...]
 """
 import os
 import sys

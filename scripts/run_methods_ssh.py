@@ -19,10 +19,10 @@ combination (momentum only, eq-time + integrated), and the two phonon
 channels.  No beta floor is applied — see the vault note on floors being
 biased when chosen from structure adjacent to the transition.
 
-Run:  python run_scripts/run_methods_ssh.py                    # all 34, all 3 methods
-      python run_scripts/run_methods_ssh.py --workers 6
-      python run_scripts/run_methods_ssh.py --methods pca tsne
-      python run_scripts/run_methods_ssh.py integrated_bond33_momentum
+Run:  python scripts/run_methods_ssh.py                    # all 34, all 3 methods
+      python scripts/run_methods_ssh.py --workers 6
+      python scripts/run_methods_ssh.py --methods pca tsne
+      python scripts/run_methods_ssh.py integrated_bond33_momentum
 """
 import argparse
 import os
@@ -115,7 +115,7 @@ def main():
             print(f"[{i}/{len(jobs)}] {run_one(job)}", flush=True)
 
     print(f"\nSweep finished in {(time.time() - t0) / 60:.1f} min. "
-          f"Compare with: python run_scripts/compare_methods_ssh.py --sid {args.sid}")
+          f"Compare with: python scripts/compare_methods_ssh.py --sid {args.sid}")
 
 
 if __name__ == "__main__":

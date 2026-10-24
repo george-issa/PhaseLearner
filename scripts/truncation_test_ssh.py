@@ -9,7 +9,7 @@ Caveat: the embedding itself is NOT refit (fixed PCA scores / UMAP / t-SNE coord
 per beta subsample). For an end-to-end version on a known answer see lbc_validation/ising_known_answer_test.py.
 Background: obsidian/07_Failures_and_Negative_Results.md (2026-09-06 entries).
 
-Usage (repo root):  conda run -n phaselearner python run_scripts/truncation_test_ssh.py
+Usage (repo root):  conda run -n phaselearner python scripts/truncation_test_ssh.py
 """
 import numpy as np, warnings; warnings.filterwarnings("ignore")
 from sklearn.cluster import KMeans

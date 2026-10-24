@@ -74,7 +74,7 @@ SEMIMETAL_FILL = "#f6ecd2"   # light sand  -- disordered (semimetal) region
 # --- ML estimator series -----------------------------------------------------
 # One entry per estimator.  ``path`` is a summary .npz with arrays
 #   alphas, beta_c, beta_lo, beta_hi   (beta_lo/hi = ensemble min/max)
-# written by run_scripts/tsne_neck_summary.py from the per-run
+# written by scripts/tsne_neck_summary.py from the per-run
 # tsne_results_<tag>.npz files (key ``a<alpha>_neck`` = [neck beta, depth]).
 # Marker shape carries estimator identity: square = PCA, diamond = t-SNE.
 # Draw order = list order; the smaller-footprint square goes last (on top).
@@ -88,7 +88,7 @@ ESTIMATORS = [
     ),
     dict(
         label=r"PCA",
-        # run_scripts/pca_var_r_peak.py: Var(r) peak on phonon_tau0, bootstrap bars
+        # scripts/pca_var_r_peak.py: Var(r) peak on phonon_tau0, bootstrap bars
         path=NPZ_DIR / "pca_var_r_phonon_tau0.npz",
         color=ps.OKABE_ITO[1],   # vermilion
         marker="s",

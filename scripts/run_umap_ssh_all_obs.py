@@ -17,11 +17,11 @@ The full observable set (32) mirrors create_csv_ssh_all_obs.py:
   * each greens id-pair separately, eq-time only, position + momentum
   * the KVBS combination, momentum only, eq-time + integrated
 
-Run:  python run_scripts/run_umap_ssh_all_obs.py --integrated-bonds  # the 13 integrated bond-bond obs
-      python run_scripts/run_umap_ssh_all_obs.py                     # compute all 32
-      python run_scripts/run_umap_ssh_all_obs.py bond33_momentum     # a subset
-      python run_scripts/run_umap_ssh_all_obs.py --integrated-bonds --plot
-      python run_scripts/run_umap_ssh_all_obs.py --integrated-bonds --plot-only
+Run:  python scripts/run_umap_ssh_all_obs.py --integrated-bonds  # the 13 integrated bond-bond obs
+      python scripts/run_umap_ssh_all_obs.py                     # compute all 32
+      python scripts/run_umap_ssh_all_obs.py bond33_momentum     # a subset
+      python scripts/run_umap_ssh_all_obs.py --integrated-bonds --plot
+      python scripts/run_umap_ssh_all_obs.py --integrated-bonds --plot-only
 """
 import argparse
 import os
