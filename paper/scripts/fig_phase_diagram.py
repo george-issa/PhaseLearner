@@ -7,20 +7,36 @@ hopping t).  The ordered Kekule valence-bond-solid (KVBS) phase lives at LOW T
 (high beta), the disordered semimetal at HIGH T -- so on this T_c-alpha diagram
 the KVBS region sits BELOW the phase boundary and the semimetal ABOVE it, and
 the boundary RISES with alpha (beta_c falls with alpha, so T_c grows).
-Two series are overlaid:
+Three series are overlaid:
 
   * FSS        -- finite-size-scaling beta_c (sohan_phase_diagram.pdf); the
                   established phase boundary / ground truth.  Drawn as a smooth
                   guide-to-the-eye that separates the two coloured regions.
-  * PCA / k-means -- unsupervised estimate from the integrated single
-                  bond-bond correlator B_33: PCA scores clustered with k=2
-                  k-means, beta_c = sigmoid midpoint of the ordered fraction
-                  (the ``km_sig`` estimator).  Validated against FSS.
+  * t-SNE neck  -- unsupervised estimate from the equal-time bond-bond
+                  correlator B_012345 (momentum space): every DQMC configuration
+                  is embedded with PCA(50) -> t-SNE; the map is a horseshoe
+                  (thin low-beta arc, diffuse high-beta cloud) and beta_c is the
+                  NECK -- the beta at which the per-beta centroid path crosses
+                  the thinnest part of the map, i.e. where a configuration is
+                  equally likely to sit in either lobe.  The neck does not move
+                  under asymmetric truncation of the beta window.  Error bars =
+                  spread of the neck over the t-SNE perplexity / seed ensemble.
+  * PCA          -- unsupervised estimate from the raw tau=0 phonon field: PCA
+                  over the beta sweep finds a degenerate leading pair spanning
+                  the Kekule order-parameter plane; r = |(P1, P2)| is the
+                  symmetry-invariant amplitude and beta_c is the peak of Var(r)
+                  across configurations (the susceptibility of the learned order
+                  parameter).  Point = bootstrap median of the peak position,
+                  error bars = its 16-84 % range (bins are independent, so a
+                  plain bootstrap over configurations is the right resampling).
+                  The earlier k-means "km_sig" series (PCA, UMAP, t-SNE) were
+                  removed on 2026-09-06: they returned the midpoint of the beta
+                  grid (obsidian/07_Failures_and_Negative_Results.md).
 
 The two phases are cued by small honeycomb cartoons: a uniform lattice for the
 semimetal and a Kekule (alternating strong-bond) lattice for the KVBS.
 
-More ML estimators will be added later: add entries to ESTIMATORS below.
+More ML estimators can be added: append entries to ESTIMATORS below.
 
 Usage
 -----
@@ -56,40 +72,36 @@ KVBS_FILL = "#dbe7f5"        # light blue  -- ordered (KVBS) region
 SEMIMETAL_FILL = "#f6ecd2"   # light sand  -- disordered (semimetal) region
 
 # --- ML estimator series -----------------------------------------------------
-# Each entry: how to pull a per-alpha beta_c out of a pca_results_*.npz file.
-# beta_c array layout (ssh_ml_phase/pca_method.run_all):
-#   [argmax_P1, argmax_P2, km_sig, km_sig_err, km_deriv, best, mean_P1_deriv_bc]
-# The user-chosen estimator is km_sig (index 2), the k-means ordered-fraction
-# sigmoid midpoint; its formal curve_fit error (index 3) is <0.01 (smaller than
-# a marker) so it is not drawn as a visible error bar.
-KM_SIG, KM_SIG_ERR = 2, 3
-
+# One entry per estimator.  ``path`` is a summary .npz with arrays
+#   alphas, beta_c, beta_lo, beta_hi   (beta_lo/hi = ensemble min/max)
+# written by run_scripts/tsne_neck_summary.py from the per-run
+# tsne_results_<tag>.npz files (key ``a<alpha>_neck`` = [neck beta, depth]).
+# Marker shape carries estimator identity: square = PCA, diamond = t-SNE.
+# Draw order = list order; the smaller-footprint square goes last (on top).
 ESTIMATORS = [
     dict(
+        label=r"t-SNE",
+        path=NPZ_DIR / "tsne_neck_BondBond012345_momentum.npz",
+        color=ps.OKABE_ITO[2],   # bluish green
+        marker="D",
+        markersize=3.8,
+    ),
+    dict(
         label=r"PCA",
-        # sID-5 sweep: has all five alpha incl. 0.2425 (the legacy
-        # ..._position.npz only carries the original four).
-        npz="pca_results_integrated_bond33_position_sid5.npz",
-        bc_index=KM_SIG,
-        err_index=KM_SIG_ERR,
+        # run_scripts/pca_var_r_peak.py: Var(r) peak on phonon_tau0, bootstrap bars
+        path=NPZ_DIR / "pca_var_r_phonon_tau0.npz",
         color=ps.OKABE_ITO[1],   # vermilion
         marker="s",
+        markersize=4.3,
     ),
 ]
 
 
-def load_estimator(npz_name, bc_index, err_index):
-    """Return (alphas, beta_c, beta_c_err) sorted by alpha for one npz file."""
-    d = np.load(NPZ_DIR / npz_name, allow_pickle=True)
-    keys = sorted({k.split("_")[0] for k in d.files if k.startswith("a0.")})
-    alphas, bc, err = [], [], []
-    for key in keys:
-        arr = d[f"{key}_beta_c"]
-        alphas.append(float(key[1:]))
-        bc.append(float(arr[bc_index]))
-        err.append(float(arr[err_index]))
-    order = np.argsort(alphas)
-    return (np.array(alphas)[order], np.array(bc)[order], np.array(err)[order])
+def load_estimator(path):
+    """Return (alphas, beta_c, beta_lo, beta_hi) sorted by alpha."""
+    d = np.load(path)
+    order = np.argsort(d["alphas"])
+    return tuple(np.asarray(d[k])[order] for k in ("alphas", "beta_c", "beta_lo", "beta_hi"))
 
 
 # ---------------------------------------------------------------------------
@@ -218,15 +230,17 @@ def main():
     # --- ML estimator series: discrete markers (no connecting line) so the ----
     # comparison against the FSS boundary stays unambiguous as estimators grow.
     # Drawn BELOW the FSS reference node (see below) so that where an estimate
-    # nearly coincides with FSS (the endpoint couplings) the small FSS dot nests
-    # cleanly INSIDE the larger estimator marker -- a deliberate "ML agrees with
-    # FSS" target -- instead of two equal outlines fusing into one glyph.
+    # nearly coincides with FSS the small FSS dot nests cleanly INSIDE the
+    # larger estimator marker.  Error bars are the ensemble spread, converted
+    # to T (T = 1/beta, so the beta_hi end is the T_lo end).
     for est in ESTIMATORS:
-        a, bc, _err = load_estimator(est["npz"], est["bc_index"], est["err_index"])
-        tc = 1.0 / bc                       # beta_c -> T_c (units of t)
-        ax.plot(a, tc, linestyle="none", color=est["color"], zorder=5,
-                marker=est["marker"], markersize=4.3, markerfacecolor="white",
-                markeredgecolor=est["color"], label=est["label"])
+        a, bc, lo, hi = load_estimator(est["path"])
+        tc = 1.0 / bc
+        yerr = np.vstack([tc - 1.0 / hi, 1.0 / lo - tc])
+        ax.errorbar(a, tc, yerr=yerr, linestyle="none", color=est["color"], zorder=5,
+                    marker=est["marker"], markersize=est["markersize"],
+                    markerfacecolor="white", markeredgecolor=est["color"],
+                    elinewidth=0.5, capsize=1.2, capthick=0.5, label=est["label"])
 
     # --- FSS phase boundary: smooth black line + small reference nodes ---------
     # The nodes are a deliberately smaller white dot than the estimator markers
@@ -265,12 +279,13 @@ def main():
     ax.set_xticks([0.240, 0.245, 0.250, 0.255])
     ax.set_xticklabels(["0.240", "0.245", "0.250", "0.255"])
     ax.set_yticks([0.05, 0.06, 0.07, 0.08, 0.09, 0.10])
-    # Legend sits in the open upper-right (semimetal region, above the rising
-    # boundary and clear of the region labels: semimetal upper-left, KVBS
-    # lower-right). FSS is plotted last (top z-order, for the nesting) but listed
-    # first in the legend -- ground truth before estimators -- so reorder here.
+    # Legend in the open upper right of the semimetal region (the position
+    # locked on 2026-07-21; the 2026-09-04 move to upper centre was for the
+    # km_sig t-SNE point at alpha=0.255, which no longer exists).  FSS is
+    # plotted last (top z-order, for the nesting) but listed first.
     handles, labels = ax.get_legend_handles_labels()
-    order = sorted(range(len(labels)), key=lambda i: labels[i] != "FSS")
+    rank = ["FSS", "PCA", "t-SNE"]          # ground truth first, then estimators
+    order = sorted(range(len(labels)), key=lambda i: rank.index(labels[i]))
     ax.legend([handles[i] for i in order], [labels[i] for i in order],
               loc="upper right", bbox_to_anchor=(0.99, 0.99), handlelength=1.4)
 
