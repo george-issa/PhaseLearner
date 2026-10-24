@@ -110,6 +110,6 @@ oversubscription when MPI walkers run in parallel:
   export MKL_NUM_THREADS=1
 
 Then launch a sweep:
-  python run_attractive_hubbard.py
+  python sims/hubbard_square/run_attractive_hubbard.py
 ==============================================================
 DONE

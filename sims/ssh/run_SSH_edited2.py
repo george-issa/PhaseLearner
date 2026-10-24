@@ -1,3 +1,8 @@
+"""
+Generate and submit one SLURM job per (alpha, beta) point of the oSSH sweep.
+
+Run from the repo root:  python sims/ssh/run_SSH_edited2.py
+"""
 import numpy as np
 import subprocess
 

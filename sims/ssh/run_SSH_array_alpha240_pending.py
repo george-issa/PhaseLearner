@@ -9,10 +9,10 @@ Strategy
 * One SLURM array script         (run_alpha240_pending.sh)  – uses
   $SLURM_ARRAY_TASK_ID to pick the right beta from a bash array.
 
-Usage
------
-    python run_SSH_array_alpha240_pending.py          # generate + submit
-    python run_SSH_array_alpha240_pending.py --dry-run  # generate only
+Usage (from the repo root)
+--------------------------
+    python sims/ssh/run_SSH_array_alpha240_pending.py           # generate + submit
+    python sims/ssh/run_SSH_array_alpha240_pending.py --dry-run # generate only
 """
 
 import subprocess

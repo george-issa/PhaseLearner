@@ -37,8 +37,8 @@ MPI_LAUNCHER = None
 # ── Output layout ──────────────────────────────────────────────────────────────
 # Simulation artifacts (.jl and .log) → sims/hubbard_square/
 # Data outputs (SmoQyDQMC folders)    → data/hubbard_square/sim_data/
-REPO_ROOT       = os.path.dirname(os.path.abspath(__file__))
-SIMULATIONS_DIR = os.path.join(REPO_ROOT, "sims", "hubbard_square")
+SIMULATIONS_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT       = os.path.dirname(os.path.dirname(SIMULATIONS_DIR))
 DATA_DIR        = os.path.join(REPO_ROOT, "data", "hubbard_square", "sim_data")
 
 source_file = os.path.join(SIMULATIONS_DIR, "attractive_hubbard_square_mpi_execute.jl")
